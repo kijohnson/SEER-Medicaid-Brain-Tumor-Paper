@@ -1,0 +1,2492 @@
+---
+title: "Brain tumor SEER-Medicaid linked analysis"
+author: "Kim Johnson"
+date: `r Sys.Date()`
+output: html_document
+---
+
+# The main code to generate input files is in "Analysis code 0 to 19.Rmd"
+# Open libraries
+```{r}
+# install.packages("pacman")
+pacman::p_load(readr, dplyr, tidyverse, lubridate, survival, survminer, hablar, table1, patchwork, openxlsx, DiagrammeR, lmtest, forestplot, MASS, nnet, broom, forcats, sandwich, mlogit, sjstats, odds.n.ends, labelled, readxl, multcomp, DiagrammeRsvg, rsvg)  
+```
+
+# Import files used for analysis
+```{r}
+seer0to39<-read_csv("/Volumes/kijohnson/Active/seer0to39.csv", show_col_types = FALSE) # this is 0 to 39 cancer patient data
+enroll_seerids<-read_csv("/Volumes/kijohnson/Active/enroll_seerids.csv", show_col_types = FALSE) # this is 0 to 39 enrollee data
+mcaid <- read_xlsx("/Volumes/kijohnson/Active/mcaid0to39KJ.xlsx") # created in continuity coding file
+```
+
+# Identify ids to exclude patients with Medicaid files in multiple states (this is used below)
+```{r}
+df <- enroll_seerids %>% 
+   find_duplicates(patient_id, YEAR) # this identifies patients in multiple states in the same year
+ 
+x <- unique(df$patient_id) # 3588 vector of unique ids who had enrollment in multiple states to exclude in exclusion section
+
+colnames(df)
+```
+
+# Reduce cancer dataset to variables of interest for this analysis
+```{r}
+# select variables
+seer0to39<-seer0to39 %>%
+  dplyr::select("patient_id", "SEER_registry",  "Race_ethnicity", "sex", "Agerecodewithsingleages_and_100",
+"Sequence_number", "Month_of_diagnosis", "Year_of_diagnosis",
+"Month_of_diagnosis_recode", "Primary_Site",  "Histology_ICD_O_2",
+"Behavior_code_ICD_O_2", "Histologic_Type_ICD_O_3", "Behavior_code_ICD_O_3",
+"Grade", "Diagnostic_Confirmation", "Type_of_Reporting_Source", 
+"SEERCombinedSummaryStage2000200", 
+"Age_recode_with_1_year_olds", "Site_recode_ICD_O_3_WHO_2008",
+"ICCCsiterecode_ICD_O_3_WHO_2008", "ICCCsiterecextendedICDO3WHO2008",
+"Behavior_recode_for_analysis", "Histologyrecode_broad_groupings", "Race_recode_White_Black_Other",
+"Race_recode_W_B_AI_API", "OriginrecodeNHIAHispanicNonHisp",
+"Firstmalignantprimary_indicator",
+"state", "county", "Vitalstatusrecodestudycutoffuse", 
+"AYA_site_recode_WHO_2008", 
+"SEERcausespecificdeathclassific", "SEERothercauseofdeathclassifica", "Census_Tract_1990", "Census_Tract_2000", "Census_Tract_2010", "Census_Coding_System", "Census_Tract_Certainty_1990", "Census_Tract_Certainty_2000",
+"Census_Tract_Certainty_2010", "Census_Tract_Poverty_Indicator",
+"Rural_Urban_Continuum_Code_1993", "Rural_Urban_Continuum_Code_2003",
+"Rural_Urban_Continuum_Code_2013", "Health_Service_Area", "HealthService_Area_NCI_Modified",
+"SEER_DateofDeath_Month", "SEER_DateofDeath_Year", "Month_of_last_follow_up_recode", "Year_of_last_follow_up_recode", "Year_of_birth", "Date_of_diagnosis_flag", "Date_therapy_started_flag",
+"Date_of_birth_flag", "Date_of_last_follow_up_flag", "Month_therapy_started",
+"Year_therapy_started",  "Derived_AJCC_flag","Primary_Payer_at_DX",
+"COD_ICD_code", "Cause_of_Death_ICD_8_or_9", "Cause_of_Death_ICD_10",
+"Recode_ICD_0_2_to_9", "Recode_ICD_0_2_to_10", "NHIA_Derived_Hisp_Origin",
+"Insurance_Recode_2007", "Yost_ACS_2006_2010", "Yost_ACS_2010_2014", "Yost_ACS_2013_2017", "Yost_ACS_2006_2010_State_based", "Yost_ACS_2010_2014_State_based", "Yost_ACS_2013_2017_State_based",
+"Yost_ACS_2006_2010_quintile", "Yost_ACS_2010_2014_quintile",
+"Yost_ACS_2013_2017_quintile", "YostACS20062010quintileStatebas",
+"YostACS20102014quintileStatebas", "YostACS20132017quintileStatebas",
+"HPV_recode_2010", "In_Medicaid_Flag", "CS_tumor_size_2004_2015", "RX_Summ_Surg_Prim_Site_1998", "Reasonnocancer_directed_surgery", "Radiation_recode", "Chemotherapy_recode_yes_no_unk", "RX_Summ_Systemic_Surg_Seq", "RX_Summ_Surg_Rad_Seq", "Radiation")
+```
+
+# Data management of variables 
+- Demographic variables
+```{r}
+# rename age variable to age to be used in adjustment
+seer0to39 <- seer0to39 %>%
+  rename(age = Agerecodewithsingleages_and_100)
+
+# recode demographic variables
+# Age, race, Hispanic, sex, vital status (all and cause specific)
+seer0to39<-seer0to39 %>%
+  mutate(age_cat=case_when(Age_recode_with_1_year_olds %in% c(0,1) ~ 0, # 0 to 4
+                                Age_recode_with_1_year_olds == 2 ~1, # 5 to 9
+                                Age_recode_with_1_year_olds == 3 ~2, # 10 to 14
+                                Age_recode_with_1_year_olds == 4 ~3, # 15 to 19
+                                Age_recode_with_1_year_olds %in% c(5,6,7,8) ~ 4)) %>% # 20 to 39
+
+         mutate(age_cat2 = case_when(age_cat != 4 ~ 0, # create age_cat 2 variable for groups 0 to 19 and 20 to 39
+                              age_cat == 4 ~ 1)) %>%
+  
+         mutate(age_cat3 = case_when(age_cat <=2 ~ 0, # create 0 to 14 and 15 to 39 age categories
+                              age_cat >2 ~ 1))  %>%
+
+         mutate(race_cat = case_when(Race_recode_W_B_AI_API == 1 ~0, # White
+                                Race_recode_W_B_AI_API == 2 ~1, # Black
+                                Race_recode_W_B_AI_API == 3 ~2, # AIAN
+                                Race_recode_W_B_AI_API == 4 ~3, # API
+                                Race_recode_W_B_AI_API == 9 ~4)) %>% # Unknown
+  
+        mutate(hispanic = case_when(OriginrecodeNHIAHispanicNonHisp == 0 ~0, # Non-Hispanic
+                                    OriginrecodeNHIAHispanicNonHisp == 1 ~1)) %>% # Hispanic
+  
+        mutate(race_ethnicity = case_when(race_cat == 0 & hispanic == 0 ~ 0, # Non-Hispanic White
+                                race_cat == 1 & hispanic == 0 ~ 1, # Non-Hispanic Black
+                                race_cat == 3 & hispanic == 0 ~ 2, # Non-Hispanic API
+                                race_cat %in% c(2,4) & hispanic == 0 ~ 3, # Non-Hispanic Other
+                                race_cat %in% c(0:4) & hispanic == 1 ~ 4)) %>% # Hispanic
+  
+        mutate(race_cat2 = case_when(race_cat == 0 ~ 0, # White
+                                     race_cat == 1 ~ 1, # Black
+                                     race_cat %in% c(2,3,4,5) ~ 2)) %>% # Other 
+  # collapse NH API and NHI Other into one category
+        mutate(race_ethnicity2 = if_else(race_ethnicity %in% c(2,3), 2,  # combines NH API and Other
+                                 if_else(race_ethnicity == 4, 3, race_ethnicity))) %>%
+  
+        mutate(sex = case_when(sex == 1 ~ 0, # "Male"
+                               sex == 2 ~ 1)) %>% # "Female"
+  
+        mutate(can_dead = case_when(SEERcausespecificdeathclassific == 0 ~ 0, # Alive or dead of other cause
+                                SEERcausespecificdeathclassific == 1 ~ 1)) %>% # Dead from cancer
+  
+        mutate(dead = case_when(Vitalstatusrecodestudycutoffuse == 1 ~ 0, # alive at end of study cutoff
+                                Vitalstatusrecodestudycutoffuse == 0 ~ 1)) # dead at end of study cutoff; note 8 an 9 are missing or N/A
+
+
+# Factor variables
+seer0to39$age_cat3 <- factor(seer0to39$age_cat3, levels = c(0:1), labels = c("0 to 14", "15 to 39"))
+seer0to39$age_cat<-factor(seer0to39$age_cat, levels=c(0:4), labels=c("0-4", "5-9", "10-14", "15-19", "20-39"))
+seer0to39$age_cat2 <- factor(seer0to39$age_cat2, levels = c(0:1), labels = c("0 to 19", "20 to 39"))
+seer0to39$race_cat<-factor(seer0to39$race_cat, levels=c(0:4), labels=c("White", "Black", "AIAN", "API", "Unknown"))
+seer0to39$hispanic<-factor(seer0to39$hispanic, levels=c(0:1), labels=c("Non-Hispanic", "Hispanic"))
+seer0to39$race_ethnicity<-factor(seer0to39$race_ethnicity, levels=c(0:4), labels=c("Non-Hispanic White", "Non-Hispanic Black", "Non-Hispanic API", "Non-Hispanic Other",  "Hispanic"))
+seer0to39$race_ethnicity2<-factor(seer0to39$race_ethnicity2, levels=c(0:3), labels=c("Non-Hispanic White", "Non-Hispanic Black", "Non-Hispanic API/Other", "Hispanic")) 
+seer0to39$sex <- factor(seer0to39$sex, levels = c(0:1), labels = c("Male", "Female"))
+seer0to39$race_cat2<-factor(seer0to39$race_cat2, levels=c(0:2), labels=c("White", "Black", "Other"))
+
+# check variables
+table(seer0to39$SEERcausespecificdeathclassific, useNA = "always")
+table(seer0to39$age_cat3, useNA = "always")
+table(seer0to39$race_cat, useNA = "always")
+table(seer0to39$hispanic, useNA = "always")
+table(seer0to39$race_ethnicity, useNA = "always")
+table(seer0to39$can_dead, useNA = "always")
+table(seer0to39$sex, useNA = "always")
+table(seer0to39$dead, useNA = "always")
+
+
+# use Yost index as a measure of poverty
+table(seer0to39$Yost_ACS_2006_2010_quintile,  useNA = "always")
+
+class(seer0to39$Yost_ACS_2006_2010_quintile)
+
+seer0to39$Yost_ACS_2006_2010_quintile <-factor(seer0to39$Yost_ACS_2006_2010_quintile, levels = c(1:5), labels = c(
+        "Group 1 (lowest SES)",
+        "Group 2",
+        "Group 3",
+        "Group 4",
+        "Group 5 (highest SES)"))
+```
+
+- Follow-up time
+```{r}
+# calculate follow-up time from month of dx, recode year of dx TO Month_of_last_follow_up_recode, Year_of_last_follow_up_recode. The difference between these variable dates would provide months of follow-up
+summary(seer0to39$Month_of_diagnosis_recode)
+summary(seer0to39$Year_of_diagnosis)
+summary(as.numeric(seer0to39$Month_of_last_follow_up_recode))
+seer0to39$Month_of_last_follow_up_recode < -as.numeric(seer0to39$Month_of_last_follow_up_recode) # make variable numeric
+seer0to39$SEER_DateofDeath_Month <- as.numeric(seer0to39$SEER_DateofDeath_Month) # make variable numeric
+summary(seer0to39$Month_of_last_follow_up_recode)
+summary(seer0to39$Year_of_last_follow_up_recode)
+summary(seer0to39$SEER_DateofDeath_Month)
+summary(seer0to39$SEER_DateofDeath_Year)
+
+# assign a date of diagnosis using 15 as the day because there is no day of dx so assume mean is 15
+seer0to39$proxy_day_of_dx <- 15
+seer0to39$proxy_day_of_fu <- 15
+seer0to39$proxy_day_of_dth <- 15
+
+# assign proxy dates
+seer0to39<-seer0to39 %>%
+  mutate(proxy_dx_date = make_date(Year_of_diagnosis, Month_of_diagnosis_recode, proxy_day_of_dx)) %>% # make date of dx
+  mutate(proxy_fu_date = make_date(Year_of_last_follow_up_recode, Month_of_last_follow_up_recode, proxy_day_of_fu)) %>% # make date of last follow-up
+  mutate(proxy_dth_date = make_date(SEER_DateofDeath_Year, SEER_DateofDeath_Month, proxy_day_of_dth)) # make date of death
+
+# calculate the difference in days between the estimated date of dx and estimated date of last follow-up 
+seer0to39$fudays<-as.numeric(difftime(seer0to39$proxy_fu_date, seer0to39$proxy_dx_date, units=c("days")))
+
+# estimate follow-up months by dividing by the average number of days in a month
+seer0to39$fumo<-seer0to39$fudays/30.437
+
+summary(seer0to39$fumo)
+```
+
+- stage at diagnosis and brain tumor subtypes
+```{r}
+# classify stage (coding scheme is in Derived_SS2000)
+table(seer0to39$SEERCombinedSummaryStage2000200, useNA = "always")
+seer0to39 <- seer0to39 %>%
+  mutate(stage = case_when(SEERCombinedSummaryStage2000200 %in% c(0,1) ~ 0,
+                           SEERCombinedSummaryStage2000200 %in% c(2,3,4,5) ~ 1,
+                           SEERCombinedSummaryStage2000200 %in% c(7) ~ 2))
+
+seer0to39$stage <- factor(seer0to39$stage, levels = c(0:2), labels = c("In situ/localized", "Regional", "Distant"))
+
+table(seer0to39$stage, useNA ="always")
+
+# create categories for AYA codes (https://seer.cancer.gov/ayarecode/aya-who2008.html)
+class(seer0to39$AYA_site_recode_WHO_2008) # numeric
+
+
+# categorize brain tumors according to AYA definition
+seer0to39 <- seer0to39 %>%
+  mutate(brain = case_when (AYA_site_recode_WHO_2008 %in% c(7,8,9) ~ 0, # 3.1 Astrocytoma
+                            AYA_site_recode_WHO_2008 %in% c(10) ~ 1, # 3.2 Other glioma
+                            AYA_site_recode_WHO_2008 %in% c(11) ~ 2, # 3.3 Ependymoma
+                            AYA_site_recode_WHO_2008 %in% c(12,13) ~ 3, # 3.4 Medulloblastoma and other PNET
+                            AYA_site_recode_WHO_2008 %in% c(14) ~ 4, # 3.5 Other specified intracranial and instraspinal neoplasms
+                            AYA_site_recode_WHO_2008 %in% c(15,16) ~ 5)) # 3.6 Unspecified intracranial and intraspinal neoplasms
+seer0to39$brain
+table(seer0to39$brain, useNA = "always")
+
+# make brain2 for Table 1 because of small numbers
+# combine because of small numbers (3.5 Other specified intracranial and instraspinal neoplasms, 3.6 Unspecified intracranial and intraspinal neoplasms)
+seer0to39 <- seer0to39 %>%
+  mutate(brain2 = if_else(brain %in% c(4,5), 4, brain)) 
+
+table(seer0to39$brain2)
+
+# factor variables
+seer0to39$brain <- factor(seer0to39$brain, levels = c(0:5), labels = c(
+  "3.1 Astrocytoma",
+  "3.2 Other glioma",
+  "3.3 Ependymoma",
+  "3.4 Medulloblastoma and other PNET",
+  "3.5 Other specified intracranial and instraspinal neoplasms",
+  "3.6 Unspecified intracranial and intraspinal neoplasms"))
+table(seer0to39$brain, useNA = "always")
+
+seer0to39$brain2 <- factor(seer0to39$brain2, levels = c(0:4), labels = c(
+  "3.1 Astrocytoma",
+  "3.2 Other glioma",
+  "3.3 Ependymoma",
+  "3.4 Medulloblastoma and other PNET",
+  "Other specified (3.5) and unspecified (3.6) intracranial and instraspinal neoplasms"))
+table(seer0to39$brain2, useNA = "always")
+
+# further classify low grade astrocytomas for sensitivity analysis (exclude low grade)
+seer0to39 <- seer0to39 %>%
+  mutate(lowgrade_exclude = case_when(AYA_site_recode_WHO_2008 == 7 ~ 1, # these are low grade tumors
+                                      AYA_site_recode_WHO_2008 != 7 ~ 0)) # those are not low grade tumors
+
+table(seer0to39$brain, seer0to39$Grade)
+```
+
+- treatment variables
+```{r}
+# Surgery and reason 
+seer0to39 <- seer0to39 %>%
+  mutate(surgery = case_when(RX_Summ_Surg_Prim_Site_1998 == 0 ~ 0, # no surgery
+                             RX_Summ_Surg_Prim_Site_1998 > 0 ~ 1)) %>% # surgery
+  mutate(surg_reason = case_when(Reasonnocancer_directed_surgery == 0 ~ 0, # surgery performed
+                                 Reasonnocancer_directed_surgery == 1 ~ 1, # surgery not recommended
+                                 Reasonnocancer_directed_surgery == 2 ~ 2, # contraindicated/autopsy only
+                                 Reasonnocancer_directed_surgery == 5 ~ 3, # patient died before recommended surgery
+                                 Reasonnocancer_directed_surgery == 6 ~ 4, # unknown reason for no surgery
+                                 Reasonnocancer_directed_surgery == 7 ~ 5, # patient or patient's guardian refused
+                                 Reasonnocancer_directed_surgery == 8 ~ 6, # recommended, unknown if done
+                                 Reasonnocancer_directed_surgery == 9 ~ 7)) # unknown, autopsy or death certificate only case
+
+# factor variables
+seer0to39$surgery <- factor(seer0to39$surgery, levels = c(0:1 ), labels = c("No surgery", "Surgery"))
+seer0to39$surg_reason <- factor(seer0to39$surg_reason, levels = c(0:7), labels = c("Surgery performed", "Surgery not recommended", "Contraindicated/autopsy only", "Patient died before recommended surgery", "Unknown reason for no surgery", "Patient or patient's guardian refused", "Recommended, unknown if done", "Unknown, autopsy or death certificate only case"))
+        
+table(seer0to39$surgery)
+table(seer0to39$surg_reason, useNA = "always")
+
+# Radiation
+table(seer0to39$Radiation_recode, useNA = "always")
+
+seer0to39 <- seer0to39 %>%
+  mutate(radiation = case_when(Radiation %in% c(0,7) ~ 0, # none, diagnosed at autopsy, unknown
+                             Radiation %in% c(1,2,3,4,5,6) ~ 1, # radiation
+                             Radiation %in% c(8,9) ~ 2)) # unknown
+
+table(seer0to39$radiation, seer0to39$Radiation, useNA="always")
+seer0to39$radiation<- factor(seer0to39$radiation, levels = c(0:2), labels = c("No/unknown radiation", "Radiation", "Unknown"))
+  
+table(seer0to39$radiation, useNA = "always")
+
+# Chemotherapy
+table(seer0to39$Chemotherapy_recode_yes_no_unk) # not provided
+
+# code surgery and radiation together
+seer0to39 <- seer0to39 %>%
+  mutate(surgery_radiation = case_when(surgery == "No surgery" & radiation == "No/unknown radiation" ~0,
+                                       surgery == "No surgery" & radiation == "Radiation" ~ 1,
+                                       surgery == "No surgery" & radiation == "Unknown" ~ 2,
+                                       surgery == "Surgery" & radiation == "No/unknown radiation" ~3,
+                                       surgery == "Surgery" & radiation == "Radiation" ~ 4,
+                                       surgery == "Surgery" & radiation == "Unknown" ~ 5))
+
+seer0to39$surgery_radiation <- factor(seer0to39$surgery_radiation, levels = c(0:5), labels = c("No surgery, No/unknown radiation", "No surgery, radiation", "No surgery, unknown", "Surgery, No/unknown radiation", "Surgery, radiation", "Surgery, unknown"))
+
+# code surgery and radiation together
+seer0to39 <- seer0to39 %>%
+  mutate(surgery_radiation2 = case_when(surgery %in% c("No surgery") & radiation %in% c("No/unknown radiation", "Unknown") ~ 0,
+                                       surgery %in% c("No surgery") & radiation %in% c("Radiation") ~ 1,
+                                       surgery == "Surgery" & radiation == "Radiation" ~ 2,
+                                       surgery == "Surgery" & radiation %in% c("Unknown", "No/unknown radiation") ~ 3))
+
+# factor variables
+seer0to39$surgery_radiation2 <- factor(seer0to39$surgery_radiation2, levels = c(0:3), labels = c("No surgery, No/unknown radiation", "No surgery/surgery unknown, radiation", "Surgery and Radiation", "Surgery and No/unknown radiation"))
+
+table(seer0to39$surgery_radiation, useNA = "always")
+table(seer0to39$surgery_radiation, seer0to39$surgery_radiation2, useNA = "always")
+```
+
+# Exclusions
+- limit to brain tumors
+```{r}
+seer0to39 <- seer0to39 %>%
+  filter(!is.na(brain)) # 11274
+
+table(seer0to39$brain)
+```
+
+- limit to first cancers
+```{r}
+seer0to39 <- seer0to39 %>%
+  filter(Firstmalignantprimary_indicator == 1) # 10,724
+```
+
+- limit to sequence number 01 or 00
+```{r}
+test<- seer0to39 %>%
+  filter(!Sequence_number %in% c("00", "01"))
+
+seer0to39 <- seer0to39 %>%
+  filter(Sequence_number %in% c("00", "01")) # 10,721
+```
+
+- Exclude multiple state Medicaid ids within a single year defined above
+```{r}
+seer0to39 <- seer0to39 %>% 
+  filter(!patient_id %in% x) # 10,449
+```
+
+- Exclude those with Medicaid cancer registry match scores below  5
+```{r}
+match <- enroll_seerids %>%
+  filter(MATCH_SCORE_HI <5)
+
+# create list of unique ids to exclude
+ids_2_exclude <- unique(match$patient_id)
+
+seer0to39 <- seer0to39 %>%
+  filter(!patient_id %in% ids_2_exclude) # 10,398
+```
+
+- Exclude those with missing data on variables used in the analysis
+```{r}
+seer0to39<-seer0to39 %>%
+  filter(!is.na(fumo)) # 10,398
+
+seer0to39<-seer0to39 %>%
+  filter(!is.na(can_dead)) # 10,302
+
+seer0to39<-seer0to39 %>%
+  filter(!is.na(In_Medicaid_Flag)) # 10,302
+
+seer0to39<-seer0to39 %>%
+  filter(!is.na(race_ethnicity)) # 10,302
+
+seer0to39<-seer0to39 %>%
+  filter(!is.na(age_cat)) # 10,302
+
+table(seer0to39$Yost_ACS_2006_2010_quintile, useNA = "always")
+seer0to39<-seer0to39 %>%
+  filter(!is.na(Yost_ACS_2006_2010_quintile)) # 10,107
+
+missing_data_percent  <- 100- (10107/10398)*100
+missing_data_percent  # <2.8%
+```
+
+# merge in mcont (medicaid enrollment data and recode 0 = Not linked, 1 = continuous, 2 = discontinuous, 3 = Other)
+```{r}
+seer0to39b <- seer0to39
+seer0to39 <- left_join(seer0to39b, mcaid, by = "patient_id")
+
+table(seer0to39$mcontb, useNA = "always")
+table(mcaid$mcontb, useNA = "always") # mcontb is from the mcaid file
+table(seer0to39$In_Medicaid_Flag)
+
+# recode a category for not in medicaid
+seer0to39 <- seer0to39 %>%
+  mutate(mcont66 = case_when(In_Medicaid_Flag == 0 ~ 0, # not linked
+                             mcontb == 0 ~ 1, # continuous
+                             mcontb == 1 ~ 2, # discontinuous
+                             mcontb == 2 ~ 3)) # Other
+table(seer0to39$mcont66, useNA = "always")
+
+table(seer0to39$mcont66, seer0to39$In_Medicaid_Flag, useNA = "always") 
+
+
+# create factor variable for analyses
+seer0to39$mcont66 <- factor(seer0to39$mcont66, levels = c(0:3), labels = c("Not enrolled", "Continuous", "Discontinuous", "Other"))
+
+table(seer0to39$mcont66, seer0to39$In_Medicaid_Flag, useNA = "always") 
+
+# for definition 2
+
+# recode a category for not in medicaid
+seer0to39 <- seer0to39 %>%
+  mutate(mcont66.2 = case_when(In_Medicaid_Flag == 0 ~ 0, # not linked
+                             mcontb2 == 0 ~ 1, # continuous
+                             mcontb2 == 1 ~ 2, # other discontinuous
+                             mcontb2 == 2 ~ 3, # other
+                             mcontb2 == 3 ~ 4)) # at diagnosis
+
+# create factor variable for analyses
+seer0to39$mcont66.2 <- factor(seer0to39$mcont66.2, levels = c(0:4), labels = c("Not enrolled", "Continuous", "Other discontinuous", "Other", "At diagnosis"))
+
+table(seer0to39$mcont66.2, useNA = "always")
+```
+
+# FIGURE 1
+```{r}
+Figure <- grViz("digraph flowchart {
+  # node definitions with substituted label text
+  node [fontname = Helvetica, shape = rectangle, fontsize=24, fontcolor='black']
+  tab1 [label = '@@1']
+  tab2 [label = '@@2']
+  tab3 [label = '@@3']
+  tab4 [label = '@@4']
+  tab5 [label = '@@5']
+  tab6 [label = '@@6']
+  tab7 [label = '@@7']
+  # edge definitions with the node IDs
+  tab1 -> tab2 -> tab3 -> tab4 -> tab5 -> tab6 -> tab7;
+}
+[1]: 'Records received for individuals diagnosed with brain cancers at ages 0 to 39 years from 2006-2013 n = 11,274'
+[2]: 'Excluding 550 individuals whose first malignant primary indicator was not equal to 1 n = 10,724'
+[3]: 'Excluding 3 individuals whose cancer sequence was > 1 n = 10,721'
+[4]: 'Excluding 272 individuals linked to multiple state Medicaid files n = 10,449'
+[5]: 'Excluding 51 individuals with Medicaid enrollment match scores <5 n =  10,398'
+[6]: 'Excluding 96 individuals with missing data on cancer specific cause of death n = 10,302'
+[7]: 'Excluding 195 individuals with missing data on Yost ACS 2006 to 2010 Quintile n = 10,107'
+")
+
+Figure
+
+# export figure
+Figure %>%
+   DiagrammeRsvg::export_svg() %>% 
+  charToRaw() %>% 
+  rsvg::rsvg_pdf("Figure 1.pdf")
+```
+
+# TABLE 1 
+```{r}
+# label variables
+label(seer0to39$age_cat)<-"Age category"
+label(seer0to39$age_cat3)<-"Age category"
+label(seer0to39$sex)<-"Sex"
+label(seer0to39$race_ethnicity)<-"Race/ethnicity category"
+label(seer0to39$fumo)<-"Follow-up months"
+label(seer0to39$Yost_ACS_2006_2010_quintile) <- "Yost Index 2006 to 2010"
+label(seer0to39$stage) <- "Stage"
+label(seer0to39$mcont66) <- "Medicaid continuity"
+label(seer0to39$brain2) <- "Brain tumor type"
+label(seer0to39$race_ethnicity2) <-"Race/ethnicity category"
+label(seer0to39$mcont66.2) <- "Medicaid continuity"
+label(seer0to39$radiation) <- "Radiation"
+label(seer0to39$surgery) <- "Surgery"
+label(seer0to39$surgery_radiation2) <- "Surgery and radiation"
+
+# make dead a factor variable just for this table
+seer0to39$can_dead2<-factor(seer0to39$can_dead, levels=c(0,1), labels= c("Alive", "Deceased"))
+seer0to39$dead2<-factor(seer0to39$dead, levels=c(0,1), labels= c("Alive", "Deceased"))
+label(seer0to39$can_dead2) <- "Died from cancer"
+label(seer0to39$dead2) <- "Died from any cause"
+seer0to39$In_Medicaid_Flag<-factor(seer0to39$In_Medicaid_Flag, levels=c(0,1), labels= c("Not Enrolled", "Enrolled"))
+
+# Table 1 for paper
+table1(~ sex + race_ethnicity + Yost_ACS_2006_2010_quintile + mcont66.2 +brain2  + stage + surgery_radiation2 + can_dead2 + dead2|age_cat3 + In_Medicaid_Flag, droplevels = TRUE, seer0to39)
+```
+
+
+
+# Stage at DX analysis
+- In_Medicaid_Flag
+```{r}
+seer0to39_stage <- seer0to39 %>%
+  filter(!is.na(stage)) %>% 
+  select(stage, In_Medicaid_Flag, SEER_registry, mcont66.2, race_ethnicity2, race_cat2, age_cat, age, Yost_ACS_2006_2010_quintile, state, brain, brain2, age_cat2, age_cat3) %>%
+  mutate(stage2 = case_when(stage == "In situ/localized" ~ 0, 
+                            stage %in% c("Regional", "Distant") ~ 1)) # combine regional and distant
+
+seer0to39_stage$stage2 <- factor(seer0to39_stage$stage2, levels = c(0,1), labels = c("In situ/localized", "Regional/Distant"))
+```
+
+- 0 to 14
+```{r}
+
+# In_Medicaid_Flag adjusted model 0 to 14
+model1 <- miceadds::glm.cluster(seer0to39_stage %>% filter(age_cat3 == "0 to 14"), stage2 ~ In_Medicaid_Flag + race_cat2 + age + brain2 + Yost_ACS_2006_2010_quintile, cluster="state", family="binomial")
+summary(model1)
+
+# extract coefficients 
+b <-as.data.frame(exp(coef(model1)))
+CI<- as.data.frame(exp(confint(model1, level=0.95))) # CI(95%)
+SE <- as.data.frame(sqrt(diag(vcov(model1))))
+p <- (1-pnorm(abs(coef(model1)/sqrt(diag(vcov(model1)))))) * 2
+df <- cbind(b, CI, p)
+
+# relabel columns and drop intercept rows
+names(df)[1:4]<-c("OR", "lowCI", "highCI", "p-value")
+df <- tibble::rownames_to_column(df, "Exposure comparison") # Apply rownames_to_column
+df<-df[-c(1,3:13),]
+
+# Replace multiple strings at a time
+rep_str = c('In_Medicaid_FlagEnrolled'='Enrolled vs. Not enrolled')
+df$`Exposure comparison`<- str_replace_all(df$`Exposure comparison`, rep_str) # this is the dataframe for summary results
+df$`Age group` <- "0 to 14"
+
+table(seer0to39_stage$brain2)
+```
+
+- 15 to 39
+```{r}
+# In_Medicaid_Flag adjusted model 15 to 39
+model2 <- miceadds::glm.cluster(seer0to39_stage %>% filter(age_cat3 == "15 to 39"), stage2 ~ In_Medicaid_Flag + race_cat2 + age + brain2 + Yost_ACS_2006_2010_quintile, cluster="state", family="binomial")
+summary(model2)
+
+# extract coefficients  
+b <-as.data.frame(exp(coef(model2)))
+CI<- as.data.frame(exp(confint(model2, level=0.95))) # CI(95%)
+SE <- as.data.frame(sqrt(diag(vcov(model2))))
+p <- (1-pnorm(abs(coef(model2)/sqrt(diag(vcov(model2)))))) * 2
+df2 <- cbind(b, CI, p)
+
+# relabel columns and drop intercept rows
+names(df2)[1:4]<-c("OR", "lowCI", "highCI", "p-value")
+df2 <- tibble::rownames_to_column(df2, "Exposure comparison") # Apply rownames_to_column
+df2<-df2[-c(1,3:13),]
+
+# Replace multiple strings at a time
+rep_str = c('In_Medicaid_FlagEnrolled'='Enrolled vs. Not enrolled')
+df2$`Exposure comparison`<- str_replace_all(df2$`Exposure comparison`, rep_str) # this is the dataframe for summary results
+df2$`Age group` <- "15 to 39"
+```
+
+- mcont66.2
+- 0-14
+```{r}
+# mcont.66 adjusted model 0 to 14
+model1 <- miceadds::glm.cluster(seer0to39_stage %>% filter(age_cat3 == "0 to 14"), stage2 ~ mcont66.2 + race_cat2 + age + brain2 + Yost_ACS_2006_2010_quintile, cluster="state", family="binomial")
+summary(model1)
+
+# extract coefficients with non-clustered SEs from the model and exponentiate for comparison 
+b <-as.data.frame(exp(coef(model1)))
+CI<- as.data.frame(exp(confint(model1, level=0.95)))
+SE <- as.data.frame(sqrt(diag(vcov(model1))))
+p <- (1-pnorm(abs(coef(model1)/sqrt(diag(vcov(model1)))))) * 2
+df3 <- cbind(b, CI, p)
+
+# relabel columns and drop intercept rows
+names(df3)[1:4]<-c("OR", "lowCI", "highCI", "p-value")
+df3 <- tibble::rownames_to_column(df3, "Exposure comparison") # Apply rownames_to_column
+df3<-df3[-c(1,6:16),]
+
+# Replace multiple strings at a time
+rep_str = c('mcont66.2Continuous'='Continuous vs. not enrolled', 'mcont66.2Other discontinuous'='Other discontinuous vs. not enrolled',
+  'mcont66.2Other'='Other vs. not enrolled', 'mcont66.2At diagnosis'='At diagnosis vs. not enrolled')
+df3$`Exposure comparison`<- str_replace_all(df3$`Exposure comparison`, rep_str) # this is the dataframe for summary results
+df3$`Age group` <- "0 to 14"
+```
+
+- mcont66.2 
+- 15-39
+```{r}
+# In_Medicaid_Flag adjusted model 15 to 39
+model2 <- miceadds::glm.cluster(seer0to39_stage %>% filter(age_cat3 == "15 to 39"), stage2 ~ mcont66.2 + race_cat2 + age + brain2 + Yost_ACS_2006_2010_quintile, cluster="state", family="binomial")
+summary(model2)
+
+# extract coefficients with non-clustered SEs from the model and exponentiate for comparison 
+b <-as.data.frame(exp(coef(model2)))
+CI<- as.data.frame(exp(confint(model2, level=0.95)))
+SE <- as.data.frame(sqrt(diag(vcov(model2))))
+p <- (1-pnorm(abs(coef(model2)/sqrt(diag(vcov(model2)))))) * 2
+df4 <- cbind(b, CI, p)
+
+# relabel columns and drop intercept rows
+names(df4)[1:4]<-c("OR", "lowCI", "highCI", "p-value")
+df4 <- tibble::rownames_to_column(df4, "Exposure comparison") # Apply rownames_to_column
+
+df4 <- df4[-c(1,6:16),]
+
+# Replace multiple strings at a time
+rep_str = c('mcont66.2Continuous'='Continuous vs. not enrolled', 'mcont66.2Other discontinuous'='Other discontinuous vs. not enrolled',
+  'mcont66.2Other'='Other vs. not enrolled', 'mcont66.2At diagnosis'='At diagnosis vs. not enrolled')
+df4$`Exposure comparison`<- str_replace_all(df4$`Exposure comparison`, rep_str) # this is the dataframe for summary results
+df4$`Age group` <- "15 to 39"
+```
+
+# TABLE 2: Stage at diagnosis analysis
+```{r}
+Table2 <- rbind(df,df2,df3,df4)
+Table2
+```
+
+# Plots of stage at dx (NO FIGURE, just a visual for easy interpretation)
+```{r}
+# factor Exposure comparison
+Table2$`Exposure comparison` <- factor(Table2$`Exposure comparison`, levels = c("Enrolled vs. Not enrolled", "At diagnosis vs. not enrolled", "Other discontinuous vs. not enrolled",  "Continuous vs. not enrolled",  "Other vs. not enrolled"))
+
+plot_stage_at_dx <- function(data, group, title){
+  Plot1 <- data %>%
+    filter(`Exposure comparison` %in% group) %>%
+    ggplot() +
+    geom_point(na.rm=TRUE, position=position_dodge(width=0.9), aes(y=OR, x = `Age group`, group = `Exposure comparison`, color = `Exposure comparison`)) + 
+    geom_hline(yintercept =1, linetype=2) +
+    theme(axis.text.y=element_blank()) +
+    geom_errorbar(position = position_dodge(width=0.9), aes(y=OR, x = `Age group`, group = `Exposure comparison`, color = `Exposure comparison`,  ymax = highCI, ymin = lowCI),  width = 0.1)  +
+    theme_bw() +
+    theme(axis.line = element_line(colour = "black"),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_blank(),
+          panel.background = element_blank(),
+          axis.text.x=element_text(size=11, face = "bold", color = "black"),
+          axis.text.y=element_text(size=11, face = "bold", color = "black"),
+          axis.title.x=element_text(size=12, face = "bold", color = "black"),
+          axis.title.y=element_text(size=12, face = "bold", color = "black"))+
+    coord_flip() +
+    labs(color = NULL, title = title, x = "Age group") +
+    theme(strip.placement = "inside", legend.position = "bottom",  strip.text = element_text(size = 9, face="bold", color="black"), strip.background = element_rect(fill="lightgray"), plot.title = element_text(face="bold"), legend.text=element_text(size=9, face="bold")) +
+    scale_color_manual(breaks = group, values=c("black", "red", "green", "blue")) 
+}
+
+
+Plot1 <- plot_stage_at_dx(Table2, c("Enrolled vs. Not enrolled"), "A. Enrolled vs. Not enrolled")
+Plot1
+
+Plot2 <- plot_stage_at_dx(Table2, c("At diagnosis vs. not enrolled", "Other discontinuous vs. not enrolled",  "Continuous vs. not enrolled",  "Other vs. not enrolled"), "B. Continuity categories vs. not enrolled")
+Plot2
+```
+
+# Stage at dx plots by main cancer types 
+- In_Medicaid_Flag
+```{r}
+# create dataframe limited to four main types
+limited <- seer0to39_stage %>%
+ filter(brain2 %in% c("3.1 Astrocytoma", "3.2 Other glioma",  "3.3 Ependymoma", "3.4 Medulloblastoma and other PNET"))
+table(limited$brain2)
+ct <- unique(limited$brain2) # create list of these types for for loop
+```
+- 0 to 14
+```{r}
+df1 <- data.frame(matrix(ncol=6, nrow=0)) # create the table
+columns<-c("Category", "OR","lowCI", "highCI", "BrainType") # label the columns with names
+colnames(df1)<-columns
+
+for (i in ct) {
+dfa<- limited %>% 
+    filter(brain2 == i)
+  x <- miceadds::glm.cluster(dfa %>% filter(age_cat3 == "0 to 14"), stage2 ~ In_Medicaid_Flag + race_cat2 + age  + Yost_ACS_2006_2010_quintile, cluster="state", family="binomial")
+
+# extract coefficients with non-clustered SEs from the model and exponentiate for comparison 
+b <-as.data.frame(exp(coef(x)))
+CI<- as.data.frame(exp(confint(x, level=0.95)))
+p <- (1-pnorm(abs(coef(x)/sqrt(diag(vcov(x)))))) * 2
+dfa <- cbind(b, CI, p)
+
+# relabel columns and drop intercept rows
+names(dfa)[1:4]<-c("OR", "lowCI", "highCI", "p-value")
+dfa <- tibble::rownames_to_column(dfa, "Exposure comparison") # Apply rownames_to_column
+dfa<-dfa[-c(1,3:13),]
+  
+dfa$BrainType<-i # add cancer type
+df1 <-rbind(dfa, df1)
+}
+
+df1 <- df1[order(df1$BrainType),] # In_Medicaid_Flag
+
+# Replace multiple strings at a time
+rep_str = c('In_Medicaid_FlagEnrolled'='Enrolled vs. not enrolled')
+df1$`Exposure comparison`<- str_replace_all(df1$`Exposure comparison`, rep_str) # this is the dataframe for summary results
+df1$`Age group` <- "0 to 14"
+```
+
+- 15 to 39
+```{r}
+df2 <- data.frame(matrix(ncol=6, nrow=0)) # create the table
+columns<-c("Category", "OR","lowCI", "highCI", "BrainType") # label the columns with names
+colnames(df2)<-columns
+
+for (i in ct) {
+dfa<- limited %>% 
+    filter(brain2 == i)
+  x <- miceadds::glm.cluster(dfa %>% filter(age_cat3 == "15 to 39"), stage2 ~ In_Medicaid_Flag + race_cat2 + age  + Yost_ACS_2006_2010_quintile, cluster="state", family="binomial")
+
+# extract coefficients with non-clustered SEs from the model and exponentiate for comparison 
+b <-as.data.frame(exp(coef(x)))
+CI<- as.data.frame(exp(confint(x, level=0.95)))
+p <- (1-pnorm(abs(coef(x)/sqrt(diag(vcov(x)))))) * 2
+dfa <- cbind(b, CI, p)
+
+# relabel columns and drop intercept rows
+names(dfa)[1:4]<-c("OR", "lowCI", "highCI", "p-value")
+dfa <- tibble::rownames_to_column(dfa, "Exposure comparison") # Apply rownames_to_column
+dfa<-dfa[-c(1,3:13),]
+  
+dfa$BrainType<-i # add cancer type
+df2 <-rbind(dfa, df2)
+}
+
+df2<- df2[order(df2$BrainType),] # In_Medicaid_Flag
+
+# Replace multiple strings at a time
+rep_str = c('In_Medicaid_FlagEnrolled'='Enrolled vs. not enrolled')
+df2$`Exposure comparison`<- str_replace_all(df2$`Exposure comparison`, rep_str) # this is the dataframe for summary results
+df2$`Age group` <- "15 to 39"
+
+SuppTable1a <- rbind(df1, df2)
+```
+
+- mcont66.2
+- 0 to 14
+```{r}
+df3 <- data.frame(matrix(ncol=6, nrow=0)) # create the table
+columns<-c("Category", "OR","lowCI", "highCI", "BrainType") # label the columns with names
+colnames(df3)<-columns
+
+for (i in ct) {
+dfa<- limited %>% 
+    filter(brain2 == i)
+  x <- miceadds::glm.cluster(dfa %>% filter(age_cat3 == "0 to 14"), stage2 ~ mcont66.2 + race_cat2 + age  + Yost_ACS_2006_2010_quintile, cluster="state", family="binomial")
+
+# extract coefficients with non-clustered SEs from the model and exponentiate for comparison 
+b <-as.data.frame(exp(coef(x)))
+CI<- as.data.frame(exp(confint(x, level=0.95)))
+p <- (1-pnorm(abs(coef(x)/sqrt(diag(vcov(x)))))) * 2
+dfa <- cbind(b, CI, p)
+
+# relabel columns and drop intercept rows
+names(dfa)[1:4]<-c("OR", "lowCI", "highCI", "p-value")
+dfa <- tibble::rownames_to_column(dfa, "Exposure comparison") # Apply rownames_to_column
+dfa<-dfa[-c(1,6:16),]
+  
+dfa$BrainType<-i # add cancer type
+df3 <-rbind(dfa, df3)
+}
+
+df3<- df3[order(df3$BrainType),] # mcont66.2
+
+# Replace multiple strings at a time
+rep_str = c('mcont66.2Continuous' = 'Continuous vs. not enrolled', 'mcont66.2Other discontinuous' = 'Other discontinuous vs. not enrolled', 'mcont66.2Other' = "Other vs. not enrolled", 'mcont66.2At diagnosis' = 'At diagnosis vs. not enrolled')
+df3$`Exposure comparison`<- str_replace_all(df3$`Exposure comparison`, rep_str) # this is the dataframe for summary results
+df3$`Age group` <- "0 to 14"
+
+# check small numbers for other glioma
+
+check <- seer0to39 %>%
+  filter(age_cat3 == "0 to 14", brain2 == "3.2 Other glioma")
+
+table(check$stage, check$mcont66.2)
+
+# Because there are 0 counts for regional and distant stage for those with other discontinuous for Other glioma, exclude these results
+df3 <- df3 %>%
+  slice(-5:-8)
+```
+
+
+- 15 to 39
+```{r}
+df4 <- data.frame(matrix(ncol=6, nrow=0)) # create the table
+columns<-c("Category", "OR","lowCI", "highCI", "BrainType") # label the columns with names
+colnames(df4)<-columns
+
+for (i in ct) {
+dfa<- limited %>% 
+    filter(brain2 == i)
+  x <- miceadds::glm.cluster(dfa %>% filter(age_cat3 == "15 to 39"), stage2 ~ mcont66.2 + race_cat2 + age  + Yost_ACS_2006_2010_quintile, cluster="state", family="binomial")
+
+# extract coefficients with non-clustered SEs from the model and exponentiate for comparison 
+b <-as.data.frame(exp(coef(x)))
+CI<- as.data.frame(exp(confint(x, level=0.95)))
+p <- (1-pnorm(abs(coef(x)/sqrt(diag(vcov(x)))))) * 2
+dfa <- cbind(b, CI, p)
+
+# relabel columns and drop intercept rows
+names(dfa)[1:4]<-c("OR", "lowCI", "highCI", "p-value")
+dfa <- tibble::rownames_to_column(dfa, "Exposure comparison") # Apply rownames_to_column
+dfa<-dfa[-c(1,6:16),]
+  
+dfa$BrainType<-i # add cancer type
+df4 <-rbind(dfa, df4)
+}
+
+df4 <- df4[order(df4$BrainType),] # In_Medicaid_Flag
+
+# Replace multiple strings at a time
+rep_str = c('mcont66.2Continuous' = 'Continuous vs. not enrolled', 'mcont66.2Other discontinuous' = 'Other discontinuous vs. not enrolled', 'mcont66.2Other' = "Other vs. not enrolled", 'mcont66.2At diagnosis' = 'At diagnosis vs. not enrolled')
+df4$`Exposure comparison`<- str_replace_all(df4$`Exposure comparison`, rep_str) # this is the dataframe for summary results
+df4$`Age group` <- "15 to 39"
+
+SuppTable1b <- rbind(df3, df4)
+```
+
+# SUPPLEMENTARY TABLE 1: Stage at diagnosis for main cancer types
+```{r}
+options(scipen = 999)
+SuppTable1 <- rbind(SuppTable1a, df3, df4)
+
+# GET N's
+seer0to15 <- seer0to39 %>%
+  filter(age <15)
+
+seer15to39 <- seer0to39 %>%
+  filter(age >=15)
+
+```
+
+# Enrolled vs. Not enrolled -plots by cancer type for four main cancer types
+```{r}
+# graph ORs and 95% CIs
+ForPlotting <- SuppTable1 %>%
+  mutate(Abbrev = case_when(BrainType == "3.1 Astrocytoma" ~ "AST",
+                            BrainType == "3.2 Other glioma" ~ "OGLIO",
+                            BrainType == "3.3 Ependymoma" ~ "EPEN",
+                            BrainType == "3.4 Medulloblastoma and other PNET" ~ "MB/PNET" ))
+
+ForPlotting$Abbrev <- factor(ForPlotting$Abbrev, levels = c("AST", "OGLIO", "EPEN", "MB/PNET"))
+ForPlotting$Abbrev <- fct_rev(ForPlotting$Abbrev) # reverse order factors
+
+# 0 to 14
+Plot1 <- ForPlotting %>%
+  filter(`Exposure comparison` == "Enrolled vs. not enrolled", `Age group` == "0 to 14") %>%
+  ggplot() +
+  geom_point(aes(y=OR, x = Abbrev, group = `Exposure comparison`, color = `Exposure comparison`), color = "black") + 
+  geom_hline(yintercept =1, linetype=2) +
+  theme(axis.text.y=element_blank()) +
+  geom_errorbar(aes(y=OR, x=Abbrev, group = `Exposure comparison`, color = `Exposure comparison`, ymax = highCI, ymin = lowCI), width = 0.1,  color = "black") +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x=element_text(size=11, face = "bold", color = "black"),
+    axis.text.y=element_text(size=11, face = "bold", color = "black"),
+    axis.title.x=element_text(size=12, face = "bold", color = "black"),
+    axis.title.y=element_text(size=12, face = "bold", color = "black"))+
+  coord_flip() +
+  labs(color = NULL, title = "A. 0 to 14", x = "Brain tumor type") +
+  ylim(0,3.5) +
+  theme(strip.placement = "inside", legend.position = "bottom",  strip.text = element_text(size = 9, face="bold", color="black"), strip.background = element_rect(fill="lightgray"), plot.title = element_text(face="bold"), legend.text=element_text(size=9, face="bold")) +
+  scale_color_manual(breaks = c("Enrolled"), values=c("black")) 
+
+Plot1
+
+# 15 to 39
+Plot2 <- ForPlotting %>%
+  filter(`Exposure comparison` == "Enrolled vs. not enrolled", `Age group` == "15 to 39") %>%
+  ggplot() +
+  geom_point(aes(y=OR, x = Abbrev, group = `Exposure comparison`, color = `Exposure comparison`), color = "black") + 
+  geom_hline(yintercept =1, linetype=2) +
+  theme(axis.text.y=element_blank()) +
+  geom_errorbar(aes(y=OR, x=Abbrev, group = `Exposure comparison`, color = `Exposure comparison`, ymax = highCI, ymin = lowCI), width = 0.1,  color = "black") +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x=element_text(size=11, face = "bold", color = "black"),
+    axis.text.y=element_text(size=11, face = "bold", color = "black"),
+    axis.title.x=element_text(size=12, face = "bold", color = "black"),
+    axis.title.y=element_text(size=12, face = "bold", color = "black"))+
+  coord_flip() +
+  labs(color = NULL, title = "B. 15 to 39", x = "Brain tumor type") +
+  ylim(0,3.5) +
+  theme(strip.placement = "inside", legend.position = "bottom",  strip.text = element_text(size = 9, face="bold", color="black"), strip.background = element_rect(fill="lightgray"), plot.title = element_text(face="bold"), legend.text=element_text(size=9, face="bold")) +
+  scale_color_manual(breaks = c("Enrolled"), values=c("black")) 
+
+Plot2
+```
+
+# mcont66.2
+```{r}
+# graph ORs and 95% CIs
+ForPlotting2 <- ForPlotting %>%
+  filter(`Exposure comparison` != "Enrolled vs. not enrolled")
+    
+ForPlotting2$`Exposure comparison` <- factor(ForPlotting2$`Exposure comparison`, levels = c("Other discontinuous vs. not enrolled", "Other vs. not enrolled", "Continuous vs. not enrolled", "At diagnosis vs. not enrolled"), labels = c("Other discontinuous", "Other", "Continuous", "At diagnosis"))
+
+# 0 to 14
+Plot3 <- ForPlotting2 %>%
+  filter(`Age group` == "0 to 14") %>%
+  ggplot() +
+  geom_point(aes(y=OR, x = Abbrev, group = `Exposure comparison`, color = `Exposure comparison`), na.rm=TRUE, position=position_dodge(width=0.9)) + 
+  geom_hline(yintercept =1, linetype=2) +
+  geom_vline(xintercept =c(1.5, 2.5,3.5,4.5,5.5,6.5,7.5,8.5,9.5), linetype=2, color = "lightgray") +
+  theme(axis.text.y=element_blank()) +
+  geom_errorbar(position = position_dodge(width=0.9), aes(y=OR, x=Abbrev, group = `Exposure comparison`, color = `Exposure comparison`,  ymax = highCI, ymin = lowCI),  width = 0.1) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x=element_text(size=11, face = "bold", color = "black"),
+    axis.text.y=element_text(size=11, face = "bold", color = "black"),
+    axis.title.x=element_text(size=12, face = "bold", color = "black"),
+    axis.title.y=element_text(size=12, face = "bold", color = "black"))+
+  coord_flip() +
+  labs(color = NULL, title = "C. 0 to 14", x = "Brain tumor type") +
+  ylim(0,7.0) +
+  theme(strip.placement = "inside", legend.position = "bottom",  strip.text = element_text(size = 9, face="bold", color="black"), strip.background = element_rect(fill="lightgray"), plot.title = element_text(face="bold"), legend.text=element_text(size=9, face="bold")) +
+  scale_color_manual(breaks = c("Other discontinuous", "Other", "Continuous", "At diagnosis"),
+                        values=c("red", "cyan3", "blue", "black" )) 
+
+Plot3
+
+# 15 to 39
+Plot4 <- ForPlotting2 %>%
+  filter(`Age group` == "15 to 39") %>%
+  ggplot() +
+  geom_point(aes(y=OR, x = Abbrev, group = `Exposure comparison`, color = `Exposure comparison`), na.rm=TRUE, position=position_dodge(width=0.9)) + 
+  geom_hline(yintercept =1, linetype=2) +
+  geom_vline(xintercept =c(1.5, 2.5,3.5,4.5,5.5,6.5,7.5,8.5,9.5), linetype=2, color = "lightgray") +
+  theme(axis.text.y=element_blank()) +
+  geom_errorbar(position = position_dodge(width=0.9), aes(y=OR, x=Abbrev, group = `Exposure comparison`, color = `Exposure comparison`,  ymax = highCI, ymin = lowCI),  width = 0.1) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x=element_text(size=11, face = "bold", color = "black"),
+    axis.text.y=element_text(size=11, face = "bold", color = "black"),
+    axis.title.x=element_text(size=12, face = "bold", color = "black"),
+    axis.title.y=element_text(size=12, face = "bold", color = "black"))+
+  coord_flip() +
+  labs(color = NULL, title = "C. 15 to 39", x = "Brain tumor type") +
+  ylim(0,7.0) +
+  theme(strip.placement = "inside", legend.position = "bottom",  strip.text = element_text(size = 9, face="bold", color="black"), strip.background = element_rect(fill="lightgray"), plot.title = element_text(face="bold"), legend.text=element_text(size=9, face="bold")) +
+  scale_color_manual(breaks = c("Other discontinuous", "Other", "Continuous", "At diagnosis"),
+                        values=c("red", "cyan3", "blue", "black")) 
+
+Plot4
+```
+# FIGURE 2: KM Survival plots by age group In_Medicaid Flag (only cancer specific death in Figure 2)
+```{r}
+plot_KM_curves <- function(myvar, agevar, labs, title){
+formula_str <<- paste("Surv(fumo, can_dead) ~", myvar)
+x <<- seer0to39 %>% 
+  filter(age_cat3 ==agevar)
+ggsurvplot(fit = survfit(as.formula(formula_str), data = x), 
+                    size = 0.75,
+    xlab = "Months from diagnosis", 
+    ylab = "Survival probability", 
+    fun="pct",  
+    title = title,
+    font.title = c(12, "bold"),
+    legend.title = "",
+    legend = "bottom",
+    font.legend=c(8, "bold"),
+    legend.labs = labs,
+    palette = c("black", "#D2D2D2", "#A0A0A0", "#6E6E6E", "#EBEBEB"),
+    font.x = c(12, "bold"),
+    font.y = c(12, "bold"),
+    xlim=c(0, 60),
+    break.x.by = 12,
+    ylim=c(0, 100),
+    censor.size=0.25,
+    font.tickslab = c(12, "bold"),
+    pval=TRUE,
+    pval.size = 5,
+    pval.coord = c(0,10),
+    conf.int = FALSE) 
+  
+}
+plot1 <- plot_KM_curves("In_Medicaid_Flag", agevar = "0 to 14", c("Not enrolled", "Enrolled"), title = "A. 0 to 14")
+plot2 <- plot_KM_curves("In_Medicaid_Flag", agevar = "15 to 39", c("Not enrolled", "Enrolled"), title = "B. 15 to 39")
+plot3 <- plot_KM_curves("mcont66.2", agevar = "0 to 14", c("Not enrolled", "Continuous", "Other discontinuous", "Other", "At diagnosis"), title = "C. 0 to 14") + guides(color = guide_legend(nrow = 2))
+plot4 <- plot_KM_curves("mcont66.2", agevar = "15 to 39", c("Not enrolled", "Continuous", "Other discontinuous", "Other", "At diagnosis"), title = "D. 15 to 39") + guides(color = guide_legend(nrow = 2))
+
+```
+
+# overall death
+```{r}
+plot_KM_curves <- function(myvar, agevar, labs, title){
+formula_str <<- paste("Surv(fumo, dead) ~", myvar)
+x <- seer0to39 %>% 
+  filter(age_cat3 ==agevar)
+ggsurvplot(fit = survfit(as.formula(formula_str), data = x), 
+                    size = 0.75,
+    xlab = "Months from diagnosis", 
+    ylab = "Survival probability", 
+    fun="pct",  
+    title = title,
+    font.title = c(12, "bold"),
+    legend.title = "",
+    legend = "bottom",
+    font.legend=c(8, "bold"),
+    legend.labs = labs,
+    palette = c("black", "#D2D2D2", "#A0A0A0", "#6E6E6E", "#EBEBEB"),
+    font.x = c(12, "bold"),
+    font.y = c(12, "bold"),
+    xlim=c(0, 60),
+    break.x.by = 12,
+    ylim=c(0, 100),
+    censor.size=0.25,
+    font.tickslab = c(12, "bold"),
+    pval=TRUE,
+    pval.size = 5,
+    pval.coord = c(0,10),
+    conf.int = FALSE) 
+  
+}
+plot1a <- plot_KM_curves("In_Medicaid_Flag", agevar = "0 to 14", c("Not enrolled", "Enrolled"), title = "A. 0 to 14")
+plot2a <- plot_KM_curves("In_Medicaid_Flag", agevar = "15 to 39", c("Not enrolled", "Enrolled"), title = "B. 15 to 39")
+plot3a <- plot_KM_curves("mcont66.2", agevar = "0 to 14", c("Not enrolled", "Continuous", "Other discontinuous", "Other", "At diagnosis"), title = "C. 0 to 14") + guides(fill = guide_legend(nrow = 2))
+plot4a <- plot_KM_curves("mcont66.2", agevar = "15 to 39", c("Not enrolled", "Continuous", "Other discontinuous", "Other", "At diagnosis"), title = "D. 15 to 39") + guides(fill = guide_legend(nrow = 2))
+```
+
+
+# FIGURE 2: Survival curves for medicaid enrollment variables 
+```{r}
+pdf("Figure 2.pdf", width=12, height=8.5, paper="USr")
+plot1$plot  + plot2$plot + plot3$plot + plot4$plot + plot_layout(ncol=2, nrow=2, guides='keep') 
+dev.off()
+```
+
+# Get pair wise comparison p-values for survival curve differences
+```{r}
+pairwise_survdiff(Surv(fumo, can_dead) ~ mcont66.2, data = seer0to39 %>% filter(age_cat3 == "0 to 14"))
+pairwise_survdiff(Surv(fumo, can_dead) ~ mcont66.2, data = seer0to39 %>% filter(age_cat3 == "15 to 39"))
+```
+
+# SUPPLEMENTARY TABLE 2: Get survival times overall and In_Medicaid_Flag
+- 0 to 14 Overall
+```{r}
+SuppTable2a <-summary(survfit(Surv(fumo, can_dead) ~ 1, data = seer0to39 %>% filter(age_cat3 == "0 to 14")), times=60) # estimates 60 month survival time
+
+SuppTable2a <- as.data.frame(cbind(SuppTable2a$strata, SuppTable2a$time, round(SuppTable2a$surv*100, 2), round(SuppTable2a$lower*100, 2), round(SuppTable2a$upper*100,2))) # makes dataframe
+
+SuppTable2a$Category <- "Overall"
+SuppTable2a$Age_cat <- "0 to 14"
+
+SuppTable2a <- setNames(SuppTable2a, c("Time (months)", "Survival Percentage", "Lower CI", "Upper CI", "Category", "Age group")) # gives column names
+
+# Reorder  columns
+SuppTable2a <- SuppTable2a[, c(5, 6,1:4)]
+```
+
+- 0 to 14 In_Medicaid_Flag
+```{r}
+SuppTable2b <-summary(survfit(Surv(fumo, can_dead) ~ In_Medicaid_Flag, data = seer0to39 %>% filter(age_cat3 == "0 to 14")), times=60) # estimates 60 month survival time
+
+SuppTable2b <- as.data.frame(cbind(SuppTable2b$strata, SuppTable2b$time, round(SuppTable2b$surv*100, 2), round(SuppTable2b$lower*100, 2), round(SuppTable2b$upper*100,2))) # makes dataframe
+
+SuppTable2b <- SuppTable2b %>%
+  mutate(V1 = case_when(V1 ==1 ~ "Not enrolled", V1 ==2 ~ "Enrolled"))
+
+SuppTable2b$Age_cat <- "0 to 14"
+
+SuppTable2b <- setNames(SuppTable2b, c("Category", "Time (months)", "Survival Percentage", "Lower CI", "Upper CI", "Age group")) # gives column names
+
+# Reorder  columns
+SuppTable2b <- SuppTable2b[, c(1,6,2:5)]
+```
+
+- 15 to 39 Overall
+```{r}
+SuppTable2c<-summary(survfit(Surv(fumo, can_dead) ~ 1, data = seer0to39 %>% filter(age_cat3 == "15 to 39")), times=60) # estimates 60 month survival time
+
+SuppTable2c <- as.data.frame(cbind(SuppTable2c$strata, SuppTable2c$time, round(SuppTable2c$surv*100, 2), round(SuppTable2c$lower*100, 2), round(SuppTable2c$upper*100,2))) # makes dataframe
+
+SuppTable2c$Category <- "Overall"
+SuppTable2c$Age_cat <- "15 to 39"
+
+SuppTable2c <- setNames(SuppTable2c, c("Time (months)", "Survival Percentage", "Lower CI", "Upper CI", "Category", "Age group")) # gives column names
+
+# Reorder  columns
+SuppTable2c <- SuppTable2c[, c(5, 6,1:4)]
+```
+
+- 15 to 39 In_Medicaid_Flag
+```{r}
+SuppTable2d <-summary(survfit(Surv(fumo, can_dead) ~ In_Medicaid_Flag, data = seer0to39 %>% filter(age_cat3 == "15 to 39")), times=60) # estimates 60 month survival time
+
+SuppTable2d <- as.data.frame(cbind(SuppTable2d$strata, SuppTable2d$time, round(SuppTable2d$surv*100, 2), round(SuppTable2d$lower*100, 2), round(SuppTable2d$upper*100,2))) # makes dataframe
+
+SuppTable2d <- SuppTable2d %>%
+  mutate(V1 = case_when(V1 ==1 ~ "Not enrolled",
+                              V1 ==2 ~ "Enrolled"))
+
+SuppTable2d$Age_cat <- "15 to 39"
+
+SuppTable2d <- setNames(SuppTable2d, c("Category", "Time (months)", "Survival Percentage", "Lower CI", "Upper CI", "Age group")) # gives column names
+
+# Reorder  columns
+SuppTable2d <- SuppTable2d[, c(1,6,2:5)]
+```
+
+#  SUPPLEMENTARY TABLE 2: Get survival times mcont66.2
+- 0 to 14
+```{r}
+table(seer0to39$mcont66.2)
+SuppTable2e <-summary(survfit(Surv(fumo, can_dead) ~ mcont66.2, data = seer0to39 %>% filter(age_cat3 == "0 to 14")), times=60) # estimates 60 month survival time
+
+SuppTable2e <- as.data.frame(cbind(SuppTable2e$strata, SuppTable2e$time, round(SuppTable2e$surv*100, 2), round(SuppTable2e$lower*100, 2), round(SuppTable2e$upper*100,2))) # makes dataframe
+
+SuppTable2e <- SuppTable2e %>%
+  mutate(V1 = case_when(V1 == 1 ~ "Not enrolled",
+                        V1 == 2 ~ "Continuous",
+                        V1 == 3 ~ "Other discontinuous",
+                        V1 == 4 ~ "Other",
+                        V1 == 5 ~ "At diagnosis"))
+
+SuppTable2e$Age_cat <- "0 to 14"
+
+SuppTable2e <- setNames(SuppTable2e, c("Category", "Time (months)", "Survival Percentage", "Lower CI", "Upper CI", "Age group")) # gives column names
+
+# Reorder  columns
+SuppTable2e <- SuppTable2e[, c(1,6,2:5)]
+
+# delete not enrolled row
+SuppTable2e <- SuppTable2e %>%
+  filter(Category != "Not enrolled")
+```
+
+- 15 to 39
+```{r}
+SuppTable2f <-summary(survfit(Surv(fumo, can_dead) ~ mcont66.2, data = seer0to39 %>% filter(age_cat3 == "15 to 39")), times=60) # estimates 60 month survival time
+
+# 20 to 39
+SuppTable2f <- as.data.frame(cbind(SuppTable2f$strata, SuppTable2f$time, round(SuppTable2f$surv*100, 2), round(SuppTable2f$lower*100, 2), round(SuppTable2f$upper*100,2))) # makes dataframe
+
+SuppTable2f <- SuppTable2f %>%
+  mutate(V1 = case_when(V1 == 1 ~ "Not enrolled",
+                        V1 == 2 ~ "Continuous",
+                        V1 == 3 ~ "Other discontinuous",
+                        V1 == 4 ~ "Other",
+                        V1 == 5 ~ "At diagnosis"
+                        ))
+
+SuppTable2f$Age_cat <- "15 to 39"
+
+SuppTable2f <- setNames(SuppTable2f, c("Category", "Time (months)", "Survival Percentage", "Lower CI", "Upper CI", "Age group")) # gives column names
+
+# Reorder  columns
+SuppTable2f <- SuppTable2f[, c(1,6,2:5)]
+
+# delete not enrolled row
+SuppTable2f <- SuppTable2f %>%
+  filter(Category != "Not enrolled")
+```
+
+# SUPPLEMENTARY TABLE 2
+```{r}
+SuppTable2 <- rbind(SuppTable2a, SuppTable2b, SuppTable2c, SuppTable2d, SuppTable2e, SuppTable2f)
+```
+
+# 60 month survival by CNS tumor type
+- 0 to 14 In_Medicaid_Flag
+```{r}
+# Initialize an empty data frame with appropriate column names
+columns <- c("Medicaid_Category", "Survival Percentage", "LowerCI", "UpperCI", "Brain tumor subtype")
+results <- data.frame(matrix(ncol = length(columns), nrow = 0))
+colnames(results) <- columns
+
+# get unique brain tumor types
+ct <- unique(seer0to39$brain2)
+
+# for loop to get brain tumor specific results
+for (i in ct) {
+  df <- seer0to39 %>% filter(brain2 == i, age_cat3 == "0 to 14")
+  
+  # Calculate survival at 60 months
+  x <- summary(survfit(Surv(fumo, can_dead) ~ In_Medicaid_Flag, df), times = 60)
+  
+  # Create a new row for the result
+  new_row <- data.frame(
+    Medicaid_Category = x$strata,
+    Survival_Percentage = round(x$surv, 3) * 100,
+    LowerCI = round(x$lower, 3) * 100,
+    UpperCI = round(x$upper, 3) * 100,
+    Brain_tumor_subtype = i
+  )
+  
+  # Append the new row to the results data frame
+  results <- rbind(results, new_row)
+}
+
+# Sort the results by a Brain tumor subtype
+results <- results[order(results$Brain_tumor_subtype), ]
+
+# Add labels to Medicaid categories
+SuppTable3a <- results %>%
+  rename(Category = Medicaid_Category) %>%
+  mutate(Category = case_when(Category == "In_Medicaid_Flag=Not Enrolled" ~ "Not enrolled",
+                              Category == "In_Medicaid_Flag=Enrolled" ~ "Enrolled")) %>%
+  mutate(Age_cat = "0 to 14")
+```
+
+- 15 to 39 In_Medicaid_Flag 
+```{r}
+# Initialize an empty data frame with appropriate column names
+columns <- c("Medicaid_Category", "Survival Percentage", "LowerCI", "UpperCI", "Brain tumor subtype")
+results <- data.frame(matrix(ncol = length(columns), nrow = 0))
+colnames(results) <- columns
+
+for (i in ct) {
+  df <- seer0to39 %>% filter(brain2 == i, age_cat3 == "15 to 39")
+  
+  # Calculate survival at 60 months
+  x <- summary(survfit(Surv(fumo, can_dead) ~ In_Medicaid_Flag, df), times = 60)
+  
+  # Create a new row for the result
+  new_row <- data.frame(
+    Medicaid_Category = x$strata,
+    Survival_Percentage = round(x$surv, 3) * 100,
+    LowerCI = round(x$lower, 3) * 100,
+    UpperCI = round(x$upper, 3) * 100,
+    Brain_tumor_subtype = i
+  )
+  
+  # Append the new row to the results data frame
+  results <- rbind(results, new_row)
+}
+
+# Sort the results by brain tumor subtype
+results <- results[order(results$Brain_tumor_subtype), ]
+
+# Add labels to Medicaid categories
+SuppTable3b <- results %>%
+  rename(Category = Medicaid_Category) %>%
+  mutate(Category = case_when(Category == "In_Medicaid_Flag=Not Enrolled" ~ "Not enrolled",
+                              Category == "In_Medicaid_Flag=Enrolled" ~ "Enrolled")) %>%
+  mutate(Age_cat = "15 to 39")
+```
+
+- 0 to 14 mcont66.2
+```{r}
+# Initialize an empty data frame with appropriate column names
+columns <- c("Medicaid_Category", "Survival Percentage", "LowerCI", "UpperCI", "Brain tumor subtype")
+results <- data.frame(matrix(ncol = length(columns), nrow = 0))
+colnames(results) <- columns
+
+for (i in ct) {
+  df <- seer0to39 %>% filter(brain2 == i, age_cat3 == "0 to 14")
+  
+  # Calculate survival at 60 months
+  x <- summary(survfit(Surv(fumo, can_dead) ~ mcont66.2, df), times = 60)
+  
+  # Create a new row for the result
+  new_row <- data.frame(
+    Medicaid_Category = x$strata,
+    Survival_Percentage = round(x$surv, 3) * 100,
+    LowerCI = round(x$lower, 3) * 100,
+    UpperCI = round(x$upper, 3) * 100,
+    Brain_tumor_subtype = i
+  )
+  
+  # Append the new row to the results data frame
+  results <- rbind(results, new_row)
+}
+
+# Sort the results by brain tumor subtype
+results <- results[order(results$Brain_tumor_subtype), ]
+
+# Add labels to Medicaid categories
+SuppTable3c <- results %>%
+  rename(Category = Medicaid_Category) %>%
+  mutate(Category = case_when(Category == "mcont66.2=Not enrolled" ~ "Not enrolled",
+                              Category == "mcont66.2=Continuous" ~ "Continuous",
+                              Category == "mcont66.2=Other discontinuous" ~ "Other discontinuous",
+                              Category == "mcont66.2=Other" ~ "Other",
+                              Category == "mcont66.2=At diagnosis" ~ "At diagnosis")) %>%
+  mutate(Age_cat = "0 to 14")
+```
+
+- 15 to 39 mcont66.2
+```{r}
+# Initialize an empty data frame with appropriate column names
+columns <- c("Medicaid_Category", "Survival Percentage", "LowerCI", "UpperCI", "Brain tumor subtype")
+results <- data.frame(matrix(ncol = length(columns), nrow = 0))
+colnames(results) <- columns
+
+for (i in ct) {
+  df <- seer0to39 %>% filter(brain2 == i, age_cat3 == "15 to 39")
+  
+  # Calculate survival at 60 months
+  x <- summary(survfit(Surv(fumo, can_dead) ~ mcont66.2, df), times = 60)
+  
+  # Create a new row for the result
+  new_row <- data.frame(
+    Medicaid_Category = x$strata,
+    Survival_Percentage = round(x$surv, 3) * 100,
+    LowerCI = round(x$lower, 3) * 100,
+    UpperCI = round(x$upper, 3) * 100,
+    Brain_tumor_subtype = i
+  )
+  
+  # Append the new row to the results data frame
+  results <- rbind(results, new_row)
+}
+
+# Optionally, you can sort the results by a specific column
+results <- results[order(results$Brain_tumor_subtype), ]
+
+# Add labels to Medicaid categories
+SuppTable3d <- results %>%
+  rename(Category = Medicaid_Category) %>%
+  mutate(Category = case_when(Category == "mcont66.2=Not enrolled" ~ "Not enrolled",
+                              Category == "mcont66.2=Continuous" ~ "Continuous",
+                              Category == "mcont66.2=Other discontinuous" ~ "Other discontinuous",
+                              Category == "mcont66.2=Other" ~ "Other",
+                              Category == "mcont66.2=At diagnosis" ~ "At diagnosis")) %>%
+  mutate(Age_cat = "15 to 39")
+```
+
+# SUPPLEMENTARY TABLE 3: 60 month survival by CNS tumor type 
+```{r}
+SuppTable3 <- rbind(SuppTable3a, SuppTable3b, SuppTable3c, SuppTable3d)
+
+table(SuppTable3$Brain_tumor_subtype)
+# Abbreviate brain tumor subtype
+
+SuppTable3 <- SuppTable3 %>%
+  mutate(abbrev = case_when(Brain_tumor_subtype == "3.1 Astrocytoma" ~ 0,
+                            Brain_tumor_subtype == "3.2 Other glioma" ~ 1,
+                            Brain_tumor_subtype == "3.3 Ependymoma" ~ 2,
+                            Brain_tumor_subtype == "3.4 Medulloblastoma and other PNET" ~ 3,
+                            Brain_tumor_subtype == "Other specified (3.5) and unspecified (3.6) intracranial and instraspinal neoplasms" ~ 4))
+
+SuppTable3$abbrev <- factor(SuppTable3$abbrev, levels = c(0:4), labels = c("ASTRO", "OGLI", "EPEN", "MB/PNET", "OSPEC/UNSPEC"))
+```
+
+# FIGURE 3: Plot 60 month survival by tumor type and age group
+- 0 to 14 In_Medicaid_Flag
+```{r}
+Plot1 <- SuppTable3 %>%
+  filter(Age_cat == "0 to 14" & Category %in% c("Enrolled", "Not enrolled")) %>%
+  ggplot() +
+  geom_point(aes(y = Survival_Percentage, x = abbrev, group = Category, color = Category), size=2, position = position_dodge(width=0.9)) + 
+  geom_vline(xintercept = c(1.5, 2.5, 3.5, 4.5, 5.5), linetype=2) +
+  theme(axis.text.y=element_blank()) +
+  geom_errorbar(aes(y = Survival_Percentage, x = abbrev, ymax = LowerCI, ymin = UpperCI, group = Category, color = Category), height =0.5, width = 0.4, position = position_dodge(width=0.9)) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x=element_text(size=12, face = "bold", color = "black"),
+    axis.text.y=element_text(size=12, face = "bold", color = "black"),
+    axis.title.x=element_text(size=12, face = "bold", color = "black"),
+    axis.title.y=element_text(size=12, face = "bold", color = "black"))+
+  coord_flip() +
+  labs(color = NULL, x= "Brain tumor subtype", y = "60-month survival (%)", title = "A. 0 to 14 years") +
+  ylim(0, 100) +
+  scale_color_manual(values = c("black", "gray")) + 
+  theme(strip.placement = "inside", legend.position = "bottom",  strip.text = element_text(size = 9, face="bold", color="black"), strip.background = element_rect(fill="lightgray"), plot.title = element_text(face="bold"), legend.text=element_text(size=12, face="bold")) 
+
+Plot1
+```
+
+- 15 to 39 In_Medicaid_Flag
+```{r}
+Plot2 <- SuppTable3 %>%
+  filter(Age_cat == "15 to 39" & Category %in% c("Enrolled", "Not enrolled")) %>%
+  ggplot() +
+  geom_point(aes(y = Survival_Percentage, x = abbrev, group = Category, color = Category), size=2, position = position_dodge(width=0.9)) + 
+  geom_vline(xintercept = c(1.5, 2.5, 3.5, 4.5, 5.5), linetype=2) +
+  theme(axis.text.y=element_blank()) +
+  geom_errorbar(aes(y = Survival_Percentage, x = abbrev, ymax = LowerCI, ymin = UpperCI, group = Category, color = Category), height =0.5, width = 0.4, position = position_dodge(width=0.9)) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x=element_text(size=12, face = "bold", color = "black"),
+    axis.text.y=element_text(size=12, face = "bold", color = "black"),
+    axis.title.x=element_text(size=12, face = "bold", color = "black"),
+    axis.title.y=element_text(size=12, face = "bold", color = "black"))+
+  coord_flip() +
+  labs(color = NULL, x= "Brain tumor subtype", y = "60-month survival (%)", title = "B. 15 to 39 years") +
+  ylim(0, 100) +
+  scale_color_manual(values = c("black", "gray")) + 
+  theme(strip.placement = "inside", legend.position = "bottom",  strip.text = element_text(size = 9, face="bold", color="black"), strip.background = element_rect(fill="lightgray"), plot.title = element_text(face="bold"), legend.text=element_text(size=12, face="bold")) 
+
+Plot2
+```
+
+- 0 to 14 mcont66.2
+```{r}
+Plot3 <- SuppTable3 %>%
+  filter(Age_cat == "0 to 14" & !Category %in% c("Enrolled")) %>%
+  ggplot() +
+  geom_point(aes(y = Survival_Percentage, x = abbrev, group = Category, color = Category), size=2, position = position_dodge(width=0.9)) + 
+  geom_vline(xintercept = c(1.5, 2.5, 3.5, 4.5, 5.5), linetype=2) +
+  theme(axis.text.y=element_blank()) +
+  geom_errorbar(aes(y = Survival_Percentage, x = abbrev, ymax = LowerCI, ymin = UpperCI, group = Category, color = Category), height =0.5, width = 0.4, position = position_dodge(width=0.9)) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x=element_text(size=12, face = "bold", color = "black"),
+    axis.text.y=element_text(size=12, face = "bold", color = "black"),
+    axis.title.x=element_text(size=12, face = "bold", color = "black"),
+    axis.title.y=element_text(size=12, face = "bold", color = "black"))+
+  coord_flip() +
+  labs(color = NULL, x= "Brain tumor subtype", y = "60-month survival (%)", title = "C. 0 to 14 years") +
+  ylim(0, 100) +
+  scale_color_manual(values = c("black", "#D2D2D2", "#A0A0A0", "#6E6E6E", "#EBEBEB")) + 
+  theme(strip.placement = "inside", legend.position = "bottom",  strip.text = element_text(size = 9, face="bold", color="black"), strip.background = element_rect(fill="lightgray"), plot.title = element_text(face="bold"), legend.text=element_text(size=12, face="bold"))  +
+  guides(color = guide_legend(nrow = 3, byrow = TRUE))
+
+Plot3
+```
+
+- 15 to 39 mcont66.2
+```{r}
+Plot4 <- SuppTable3 %>%
+  filter(Age_cat == "15 to 39" & !Category %in% c("Enrolled")) %>%
+  ggplot() +
+  geom_point(aes(y = Survival_Percentage, x = abbrev, group = Category, color = Category), size=2, position = position_dodge(width=0.9)) + 
+  geom_vline(xintercept = c(1.5, 2.5, 3.5, 4.5, 5.5), linetype=2) +
+  theme(axis.text.y=element_blank()) +
+  geom_errorbar(aes(y = Survival_Percentage, x = abbrev, ymax = LowerCI, ymin = UpperCI, group = Category, color = Category), height =0.5, width = 0.4, position = position_dodge(width=0.9)) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x=element_text(size=12, face = "bold", color = "black"),
+    axis.text.y=element_text(size=12, face = "bold", color = "black"),
+    axis.title.x=element_text(size=12, face = "bold", color = "black"),
+    axis.title.y=element_text(size=12, face = "bold", color = "black"))+
+  coord_flip() +
+  labs(color = NULL, x= "Brain tumor subtype", y = "60-month survival (%)", title = "D. 15 to 39 years") +
+  ylim(0, 100) +
+  scale_color_manual(values = c("black", "#D2D2D2", "#A0A0A0", "#6E6E6E", "#EBEBEB")) + 
+  theme(strip.placement = "inside", legend.position = "bottom",  strip.text = element_text(size = 9, face="bold", color="black"), strip.background = element_rect(fill="lightgray"), plot.title = element_text(face="bold"), legend.text=element_text(size=12, face="bold")) +
+   guides(color = guide_legend(nrow = 3, byrow = TRUE))
+
+Plot4
+```
+
+# FIGURE 3: 60 months survival plots
+```{r}
+pdf("Figure 3.pdf", width=11, height=8.5, paper="USr")
+Plot1 + Plot2 + Plot3 + Plot4  + plot_layout(ncol=2, nrow=2) 
+
+dev.off()
+```
+
+# TABLE 3: Cox proportional hazards models for In_Medicaid_Flag and mcont66.2 by age group
+```{r}
+age_cat <- c("0 to 14", "15 to 39")
+
+# Initialize an empty data frame to store results
+results <- data.frame()
+
+# Nested loops for age_cat2, and variables
+  for (i in age_cat) {
+    for (variable in c("In_Medicaid_Flag", "mcont66.2")) {
+      df <- seer0to39 %>% filter( age_cat3 == i)
+      # adjusted models 0 to 19
+      formula <- as.formula(paste("Surv(fumo, can_dead) ~", variable, "+ race_ethnicity + age + Yost_ACS_2006_2010_quintile + cluster(state)"))
+      res.cox2 <- coxph(formula, data = df) 
+      print(paste(", age_cat2 =", i, ", and variable =", variable))
+      print(summary(res.cox2))
+
+      df2 <- as.data.frame(tidy(res.cox2, exponentiate = TRUE, conf.int = TRUE))
+      df2$age_cat <- i
+      df2$variable <- variable
+      df2$model <- "Adjusted for race/ethnicity, age, and Yost SES indicator"
+
+      # Append the new row to the results data frame
+      results <- rbind(results, df2 %>% filter(term %in% c("In_Medicaid_FlagEnrolled", "mcont66.2Continuous", "mcont66.2Other discontinuous", "mcont66.2Other", "mcont66.2At diagnosis")) %>% select(term, estimate, conf.low, conf.high, age_cat, variable))
+    }
+  }
+
+
+Table3 <- results
+
+# Strip off "mcont66.2" from the variable values
+Table3$term <- sub("^mcont66.2", "", Table3$term)
+
+# Strip off "In_Medicaid_Flag" from the variable values
+Table3$term <- sub("^In_Medicaid_Flag", "", Table3$term)
+
+# rename columns
+Table3 <- Table3 %>%
+  rename(Category = "term",
+         HR = estimate,
+         `2.5%` = conf.low,
+         `97.5%` = conf.high) %>%
+  select(-variable)
+```
+
+
+# SUPPLEMENTARY TABLE 4: Do the results materially change if we use death from any cause?
+```{r}
+# adjusted models 0 to 14
+res.cox2 <- coxph(Surv(fumo, dead) ~ In_Medicaid_Flag + race_ethnicity + age + Yost_ACS_2006_2010_quintile + cluster(state), data = seer0to39 %>% filter(age_cat3 == "0 to 14")) 
+res.cox2
+summary(res.cox2)
+
+SuppTable4a<-as.data.frame(exp(cbind(HR = coef(res.cox2), confint(res.cox2))))
+   SuppTable4a <- SuppTable4a[c(1),] %>%
+    rownames_to_column() %>%
+    mutate(model="Adjusted for race/ethnicity, age, and Yost SES indicator") %>%
+    rename(Category = rowname) %>%
+    mutate(Category = case_when(Category == "In_Medicaid_FlagEnrolled" ~ "Enrolled")) 
+   
+SuppTable4a$`Age category` <- "0 to 14"
+
+
+# adjusted models 15 to 39
+res.cox3 <- coxph(Surv(fumo, dead) ~ In_Medicaid_Flag + race_ethnicity + age + Yost_ACS_2006_2010_quintile + cluster(state), data = seer0to39 %>% filter(age_cat3 == "15 to 39")) 
+res.cox3
+summary(res.cox3)
+
+SuppTable4b<-as.data.frame(exp(cbind(HR = coef(res.cox3), confint(res.cox3))))
+   SuppTable4b <- SuppTable4b[c(1),] %>%
+    rownames_to_column() %>%
+    mutate(model="Adjusted for race/ethnicity, age, and Yost SES indicator") %>%
+    rename(Category = rowname) %>%
+    mutate(Category = case_when(Category == "In_Medicaid_FlagEnrolled" ~ "Enrolled")) 
+   
+SuppTable4b$`Age category` <- "15 to 39"
+
+# mcont.66.2
+# adjusted models 0 to 14
+res.cox4 <- coxph(Surv(fumo, dead) ~ mcont66.2 + race_ethnicity + age + Yost_ACS_2006_2010_quintile + cluster(state), data = seer0to39 %>% filter(age_cat3 == "0 to 14")) 
+summary(res.cox4)
+
+SuppTable4c<-as.data.frame(exp(cbind(HR = coef(res.cox4), confint(res.cox4))))
+   SuppTable4c <- SuppTable4c[c(1:4),] %>%
+    rownames_to_column() %>%
+    mutate(model="Adjusted for race/ethnicity, age, and Yost SES indicator") %>%
+    rename(Category = rowname)  %>%
+    mutate(Category = case_when(Category == "mcont66.2Continuous" ~ "Continuous",
+                                Category == "mcont66.2Other discontinuous"~ "Other Discontinuous",
+                                Category == "mcont66.2Other" ~ "Other",
+                                Category == "mcont66.2At diagnosis" ~ "At diagnosis")) 
+   
+SuppTable4c$`Age category` <- "0 to 14"
+
+# adjusted models 15 to 39
+res.cox5 <- coxph(Surv(fumo, dead) ~ mcont66.2 + race_ethnicity + age + Yost_ACS_2006_2010_quintile + cluster(state), data = seer0to39 %>% filter(age_cat3 == "15 to 39")) 
+summary(res.cox5)
+
+SuppTable4d<-as.data.frame(exp(cbind(HR = coef(res.cox5), confint(res.cox5))))
+   SuppTable4d <- SuppTable4d[c(1:4),] %>%
+    rownames_to_column() %>%
+    mutate(model="Adjusted for race/ethnicity, age, and Yost SES indicator") %>%
+    rename(Category = rowname)  %>%
+    mutate(Category = case_when(Category == "mcont66.2Continuous" ~ "Continuous",
+                                Category == "mcont66.2Other discontinuous"~ "Other Discontinuous",
+                                Category == "mcont66.2Other" ~ "Other",
+                                Category == "mcont66.2At diagnosis" ~ "At diagnosis")) 
+   
+SuppTable4d$`Age category` <- "15 to 39"
+
+# The answer is not materially
+
+SuppTable4 <-rbind(SuppTable4a, SuppTable4b, SuppTable4c, SuppTable4d)
+```
+
+
+# SUPPLEMENTARY TABLE 5: Cox proportional hazards models for In_Medicaid_Flag and mcont66.2 by the tumor subtype
+```{r}
+# make list for for loop
+age_cat <- c("0 to 14", "15 to 39")
+
+# Initialize an empty data frame to store results
+results <- data.frame()
+
+# Nested loops for ct, age_cat2, and variables
+for (i in ct) {
+  for (j in age_cat) {
+    for (variable in c("In_Medicaid_Flag", "mcont66.2")) {
+      df <- seer0to39 %>% filter(brain2 == i, age_cat3 == j)
+      
+      # adjusted models 0 to 19
+      formula <- as.formula(paste("Surv(fumo, can_dead) ~", variable, "+ race_ethnicity + age + Yost_ACS_2006_2010_quintile + cluster(state)"))
+      res.cox2 <- coxph(formula, data = df) 
+      print(paste("Results for ct =", i, ", age_cat2 =", j, ", and variable =", variable))
+      print(summary(res.cox2))
+
+      df2 <- as.data.frame(tidy(res.cox2, exponentiate = TRUE, conf.int = TRUE))
+      df2$btype <- i
+      df2$age_cat <- j
+      df2$variable <- variable
+
+      # Append the new row to the results data frame
+      results <- rbind(results, df2 %>% filter(term %in% c("In_Medicaid_FlagEnrolled", "mcont66.2Continuous", "mcont66.2Other discontinuous", "mcont66.2Other", "mcont66.2At diagnosis")) %>% select(term, estimate, conf.low, conf.high, btype, age_cat, variable))
+    }
+  }
+}
+
+SuppTable5 <- results
+SuppTable5$abbrev <- factor(SuppTable5$btype, levels = c("3.1 Astrocytoma", "3.2 Other glioma", "3.3 Ependymoma", "3.4 Medulloblastoma and other PNET", "Other specified (3.5) and unspecified (3.6) intracranial and instraspinal neoplasms"), labels = c("ASTRO", "OGLI", "EPEN", "MB/PNET", "OTHER"))
+
+# Strip off "mcont66.2" from the variable values
+SuppTable5$term <- sub("^mcont66.2", "", SuppTable5$term)
+
+# Strip off "In_Medicaid_Flag" from the variable values
+SuppTable5$term <- sub("^In_Medicaid_Flag", "", SuppTable5$term)
+
+# remove other
+SuppTable5 <- SuppTable5 %>%
+  filter(abbrev != "OTHER")
+
+table(SuppTable5$btype)
+```
+
+# Create a function to generate plots for Supplementary Figure 1
+```{r}
+plot_survival_results <- function(data, variable, age_group, title) {
+  df_subset <- data %>% filter(variable == variable, age_cat == age_group)
+
+  # Check if the subset is not empty
+  if (nrow(df_subset) > 0) {
+    p <- ggplot(df_subset, aes(x = estimate, y = abbrev, color = term, group=term)) +
+      geom_point(position = position_dodge(width = 0.8), size = 3) +
+      geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.5, position = position_dodge(width = 0.8)) +
+      geom_vline(xintercept =1, linetype=2) +
+      labs(title = title,
+           x = "HR", y = "Brain Tumor Subtype") +
+      theme_classic() +
+      theme(legend.position = "bottom",
+            axis.title.x=element_text(size=12, face = "bold", color = "black"),
+            axis.title.y=element_text(size=12, face = "bold", color = "black"),
+            plot.title = element_text(face="bold")) +
+  theme(legend.title=element_blank())
+   guides(color = guide_legend(nrow = 3, byrow = TRUE))
+
+    print(p)
+  }
+}
+
+A <- plot_survival_results(SuppTable5 %>% filter(variable == "In_Medicaid_Flag"), variable, "0 to 14", title = "A. 0 to 14")
+B <- plot_survival_results(SuppTable5 %>% filter(variable == "In_Medicaid_Flag"), variable, "15 to 39", title = "B. 15 to 39")
+C <- plot_survival_results(SuppTable5 %>% filter(variable == "mcont66.2"), variable, "0 to 14", title = "C. 0 to 14")
+D <- plot_survival_results(SuppTable5 %>% filter(variable == "mcont66.2"), variable, "15 to 39", title = "D. 15 to 39")
+```
+
+# SUPPLEMENTARY FIGURE 1
+```{r}
+pdf("SUPPLEMENTARY FIGURE 1.pdf", width=11, height=8.5, paper="USr")
+A + B + C + D  + plot_layout(ncol=2, nrow=2) 
+dev.off()
+```
+
+# Test for effect modification by race, sex
+- 0 to 14 race/ethnicity In_Medicaid_Flag and mcont66.2
+```{r}
+# In_Medicaid_Flag
+race <- coxph(Surv(fumo, can_dead) ~ In_Medicaid_Flag + race_ethnicity + age + Yost_ACS_2006_2010_quintile + cluster(state), 
+              data = seer0to39 %>% filter(age_cat3 == "0 to 14")) 
+
+raceem<-coxph(Surv(fumo, can_dead) ~ In_Medicaid_Flag + race_ethnicity + age + Yost_ACS_2006_2010_quintile + race_ethnicity*In_Medicaid_Flag + cluster(state), 
+              data = seer0to39 %>% filter(age_cat3== "0 to 14"))
+
+# lrtest to test effect modification
+lrtest(race, raceem)
+
+# mcont66.2
+race2 <- coxph(Surv(fumo, can_dead) ~ mcont66.2 + race_ethnicity + age + Yost_ACS_2006_2010_quintile + cluster(state), 
+               data = seer0to39 %>% filter(age_cat3 == "0 to 14")) 
+
+raceem2<-coxph(Surv(fumo, can_dead) ~ mcont66.2 + race_ethnicity + age + Yost_ACS_2006_2010_quintile + race_ethnicity*In_Medicaid_Flag + cluster(state), 
+               data = seer0to39 %>% filter(age_cat3 == "0 to 14"))
+
+# lrtest to test effect modification
+lrtest(race2, raceem2)
+
+# No significant effect modification by race/ethnicity for 0 to 14 year olds
+```
+
+- 15 to 39 race/ethnicity 
+```{r}
+# In_Medicaid_Flag
+race <- coxph(Surv(fumo, can_dead) ~ In_Medicaid_Flag + race_ethnicity + age + Yost_ACS_2006_2010_quintile, 
+              data = seer0to39 %>% filter(age_cat3 == "15 to 39")) 
+
+raceem<-coxph(Surv(fumo, can_dead) ~ In_Medicaid_Flag + race_ethnicity + age + Yost_ACS_2006_2010_quintile + race_ethnicity*In_Medicaid_Flag + cluster(state), 
+              data = seer0to39 %>% filter(age_cat3 == "15 to 39")) 
+lrtest(race, raceem)
+
+# mcont66.2
+race2 <- coxph(Surv(fumo, can_dead) ~ mcont66.2 + race_ethnicity + age + Yost_ACS_2006_2010_quintile, 
+               data = seer0to39 %>% filter(age_cat3 == "15 to 39")) 
+
+raceem2 <-coxph(Surv(fumo, can_dead) ~ mcont66.2 + race_ethnicity + age + Yost_ACS_2006_2010_quintile + race_ethnicity*In_Medicaid_Flag + cluster(state), 
+                data = seer0to39 %>% filter(age_cat3 == "15 to 39")) 
+lrtest(race2, raceem2)
+
+# EM by race/ethnicity category present for 15 to 39 year olds for both variables
+```
+
+- sex
+- 0 to 14 In_Medicaid_Flag and mcont66.2
+```{r}
+# In_Medicaid_Flag
+sex <- coxph(Surv(fumo, can_dead) ~ In_Medicaid_Flag + race_ethnicity + age + Yost_ACS_2006_2010_quintile + sex + cluster(state), 
+             data = seer0to39 %>% filter(age_cat3 == "0 to 14")) 
+
+sexem<-coxph(Surv(fumo, can_dead) ~ In_Medicaid_Flag + race_ethnicity + age + Yost_ACS_2006_2010_quintile + sex + sex*In_Medicaid_Flag + cluster(state), 
+             data = seer0to39 %>% filter(age_cat3 == "0 to 14")) 
+lrtest(sex, sexem)
+
+# mcont66.2
+sex2 <- coxph(Surv(fumo, can_dead) ~ mcont66.2 + race_ethnicity + age + Yost_ACS_2006_2010_quintile + sex + cluster(state), 
+              data = seer0to39 %>% filter(age_cat3 == "0 to 14")) 
+
+sexem2<-coxph(Surv(fumo, can_dead) ~ mcont66.2 + race_ethnicity + age + Yost_ACS_2006_2010_quintile + sex + sex*In_Medicaid_Flag + cluster(state), 
+              data = seer0to39 %>% filter(age_cat3 == "0 to 14")) 
+lrtest(sex2, sexem2)
+
+# No effect modification by sex for 0 to 14 year olds
+```
+
+- 15 to 39 
+```{r}
+# In_Medicaid_Flag
+sex <- coxph(Surv(fumo, can_dead) ~ In_Medicaid_Flag + race_ethnicity + age + Yost_ACS_2006_2010_quintile + sex + cluster(state), 
+             data = seer0to39 %>% filter(age_cat3 == "15 to 39")) 
+
+sexem<-coxph(Surv(fumo, can_dead) ~ In_Medicaid_Flag + race_ethnicity + age + Yost_ACS_2006_2010_quintile + sex + sex*In_Medicaid_Flag + cluster(state), 
+             data = seer0to39 %>% filter(age_cat3 == "15 to 39")) 
+lrtest(sex, sexem)
+
+# mcont66.2
+sex2 <- coxph(Surv(fumo, can_dead) ~ mcont66.2 + race_ethnicity + age + Yost_ACS_2006_2010_quintile + sex + cluster(state), 
+              data = seer0to39 %>% filter(age_cat3 == "15 to 39")) 
+
+sexem2<-coxph(Surv(fumo, can_dead) ~ mcont66.2 + race_ethnicity + age + Yost_ACS_2006_2010_quintile + sex + sex*In_Medicaid_Flag + cluster(state), 
+              data = seer0to39 %>% filter(age_cat3 == "15 to 39")) 
+lrtest(sex2, sexem2)
+
+# EM by sex category present for In_Medicaid_Flag for 15-39 year olds
+```
+
+# SUPPLEMENTARY TABLE 6a: Cox proportional hazards models by sex for 15 to 39 year olds (only In_Medicaid_Flag was significant)
+```{r}
+# function for cox model
+run_cox_model <- function(Sex = NULL, var) {
+  x <<- seer0to39 %>%
+    filter(sex == Sex, age_cat3 == "15 to 39")
+  
+  formula_str <- paste("Surv(fumo, can_dead) ~", var, "+ age + race_ethnicity + Yost_ACS_2006_2010_quintile + cluster(state)")
+  model <- coxph(as.formula(formula_str), data = x)
+  
+  a <- as.data.frame(exp(cbind(HR = coef(model), confint(model))))
+  
+  if (nrow(a) == 1) {
+    a <- a[1,] %>%
+      rownames_to_column() %>%
+      mutate(model = paste("Adjusted for age, race/ethnicity and Yost SES indicator", sep = " "), Group = Sex)
+  } else {
+    a <- a[1:4,] %>%
+      rownames_to_column() %>%
+      mutate(model = paste("Adjusted for age, race/ethnicity, and Yost SES index", sep = " "), Group = Sex)
+  }
+  
+  # Keep only the results for In_Medicaid_Flag and mcont66.2
+  a <- a %>% filter(rowname %in% c("In_Medicaid_FlagEnrolled", "mcont66.2Other discontinuous", "mcont66.2Continuous", "mcont66.2Other", "mcont66.2At diagnosis")) %>%
+    mutate(across(c(2:4), ~ round(., 2)))
+  
+  return(a)
+}
+
+categories <- c("Male", "Female")
+variables <- c("In_Medicaid_Flag", "mcont66.2")
+
+# age_group <- "15 to 39"
+
+SuppTable6a <- data.frame()
+
+for (Sex in categories) {
+  for (var in variables) {
+      result <- run_cox_model(Sex, var)
+      result$variable <- var
+      result$variable2 <- "sex"
+      SuppTable6a <- bind_rows(SuppTable6a, result)
+    }
+  }
+
+# No scientific notation
+options(scipen = 999)
+
+SuppTable6a$rowname <- sub("^mcont66.2", "", SuppTable6a$rowname)
+SuppTable6a$rowname <- sub("^In_Medicaid_Flag", "", SuppTable6a$rowname)
+SuppTable6a <- SuppTable6a %>%
+  rename("Category" = "rowname") %>%
+  filter(variable == "In_Medicaid_Flag") 
+
+# check estimates with Cox model
+model <- coxph(Surv(fumo, can_dead) ~ In_Medicaid_Flag + age + race_ethnicity + Yost_ACS_2006_2010_quintile + cluster(state), data = seer0to39 %>% filter(age_cat3 == "15 to 39", sex == "Female"))
+summary(model) # checks for male and female
+```
+
+# SUPPLEMENTARY TABLE 6b: Cox proportional hazards models by race/ethnicity for 15 to 39 year olds (both In_Medicaid_Flag and mcont66.2 were significant)
+```{r}
+run_cox_model <- function(re, var) {
+  x <- seer0to39 %>%
+    filter(race_ethnicity == re, age_cat3 == "15 to 39")
+  
+  formula_str <- paste("Surv(fumo, can_dead) ~", var, "+ age + Yost_ACS_2006_2010_quintile + cluster(state)")
+  model <- coxph(as.formula(formula_str), data = x)
+  
+  a <- as.data.frame(exp(cbind(HR = coef(model), confint(model))))
+  
+  if (nrow(a) == 1) {
+    a <- a[1,] %>%
+      rownames_to_column() %>%
+      mutate(model = paste("Adjusted for age and Yost SES indicator", sep = " "), Group = re)
+  } else {
+    a <- a[1:4,] %>%
+      rownames_to_column() %>%
+      mutate(model = paste("Adjusted for age and Yost SES index", sep = " "), Group = re)
+  }
+  
+  # Keep only the results for In_Medicaid_Flag and mcont66.2
+  a <- a %>% filter(rowname %in% c("In_Medicaid_FlagEnrolled", "mcont66.2Other discontinuous", "mcont66.2Continuous", "mcont66.2Other", "mcont66.2At diagnosis")) %>%
+    mutate(across(c(2:4), ~ round(., 2)))
+  
+  return(a)
+}
+
+categories <- c("Non-Hispanic White", "Non-Hispanic Black", "Non-Hispanic API", "Non-Hispanic Other", "Hispanic")
+variables <- c("In_Medicaid_Flag", "mcont66.2")
+
+
+SuppTable6b <- data.frame()
+
+for (re in categories) {
+  for (var in variables) {
+      result <- run_cox_model(re, var)
+      result$variable <- var
+      result$variable2 <- "race_ethnicity"
+      SuppTable6b <- bind_rows(SuppTable6b, result)
+  }
+}
+
+options(scipen = 999)
+
+SuppTable6b$rowname <- sub("^mcont66.2", "", SuppTable6b$rowname)
+SuppTable6b$rowname <- sub("^In_Medicaid_Flag", "", SuppTable6b$rowname)
+SuppTable6b <- SuppTable6b %>%
+  rename("Category" = "rowname") 
+```
+
+# SUPPLEMENTARY TABLE 6
+```{r}
+SuppTable6 <- rbind(SuppTable6a, SuppTable6b)
+```
+
+# SUPPLEMENTARY FIGURE 2:  for HRs by sex and race_ethnicity
+```{r}
+# Create a function to generate plots
+plot_survival_results <- function(data, Variable,  title, Variable2, ytitle) {
+  df_subset <<- data %>% filter(variable == Variable, variable2 == Variable2)
+
+  # Check if the subset is not empty
+  if (nrow(df_subset) > 0) {
+    p <- ggplot(df_subset, aes(x = HR, y = Group, color = Category, group=Category)) +
+      geom_point(position = position_dodge(width = 0.8), size = 2) +
+      geom_errorbarh(aes(xmin =`2.5 %`, xmax = `97.5 %`), height = 0.5, position = position_dodge(width = 0.8)) +
+      geom_vline(xintercept =1, linetype=2) +
+      labs(title = title,
+           x = "HR", y = ytitle) +
+      theme_classic() +
+      theme(legend.position = "bottom",
+            axis.title.x=element_text(size=12, face = "bold", color = "black"),
+            axis.title.y=element_text(size=12, face = "bold", color = "black"),
+            plot.title = element_text(face="bold")) +
+  theme(legend.title=element_blank()) 
+
+    print(p)
+  }
+}
+
+A <- plot_survival_results(SuppTable6, "In_Medicaid_Flag",   title = "A. Sex ", "sex", "Sex")
+B <- plot_survival_results(SuppTable6, "In_Medicaid_Flag",  title = "B. Race/ethnicity", "race_ethnicity", "Race/ethnicity category")
+C <- plot_survival_results(SuppTable6, "mcont66.2",  title = "C. Race/ethncity", "race_ethnicity", "Race/ethnicity category")
+```
+
+```{r}
+pdf("SUPPLEMENTARY FIGURE 2.pdf", width=11, height=8.5, paper="USr")
+A + B + C  + plot_layout(ncol=2, nrow=2) 
+
+dev.off()
+
+```
+
+# Cox PH assumption testing by age group (0-14) NOT VIOLATED
+```{r}
+# In_Medicaid_Flag
+seer0to14 <- seer0to39 %>% filter(age_cat3 == "0 to 14")
+    
+model0to14<-coxph(Surv(fumo, can_dead) ~ In_Medicaid_Flag  + race_ethnicity + Yost_ACS_2006_2010_quintile + cluster(state), data = seer0to14) # Model adjusted for race, age category, and a measure of poverty
+
+Medflag0to14 <- cox.zph(model0to14, terms = FALSE)
+Medflag0to14
+
+plot(Medflag0to14[1], col=c("black", "red"), main="Medicaid_flag log log plot", fun="cloglog", xlab="Time", ylab="log(-log(S(t))") #  ph assumption violated
+
+plot(Medflag0to14, resid = TRUE)
+
+ggcoxdiagnostics(model0to14, type = "schoenfeld") 
+
+# mcont66.2
+
+model0to14b<-coxph(Surv(fumo, can_dead) ~ mcont66.2  + race_ethnicity + Yost_ACS_2006_2010_quintile + cluster(state), data = seer0to14) # Model adjusted for race, age category, and a measure of poverty
+
+Medflag0to14b <- cox.zph(model0to14b, terms = TRUE)
+Medflag0to14b # not violated
+```
+
+# Cox PH assumption testing by age group (15-39) NOT VIOLATED
+```{r}
+# In_Medicaid_Flag
+seer15to39 <- seer0to39 %>% filter(age_cat3 == "15 to 39")
+    
+model15to39<-coxph(Surv(fumo, can_dead) ~ In_Medicaid_Flag  + race_ethnicity + Yost_ACS_2006_2010_quintile + cluster(state), data = seer15to39) # Model adjusted for race, age category, and a measure of poverty
+
+Medflag15to39 <- cox.zph(model15to39, terms = FALSE)
+Medflag15to39
+
+plot(Medflag15to39[1], col=c("black", "red"), main="Medicaid_flag log log plot", fun="cloglog", xlab="Time", ylab="log(-log(S(t))") #  ph assumption violated
+
+plot(Medflag15to39, resid = TRUE)
+
+ggcoxdiagnostics(model15to39, type = "schoenfeld") 
+
+# mcont66.2
+model15to39<-coxph(Surv(fumo, can_dead) ~ mcont66.2  + race_ethnicity + Yost_ACS_2006_2010_quintile + cluster(state), data = seer15to39) # Model adjusted for race, age category, and a measure of poverty
+
+Medflag15to39 <- cox.zph(model0to14b, terms = TRUE)
+Medflag15to39 # not violated
+```
+
+# SUPPLEMENTARY TABLE 7: Sensitivity analysis: exclude low grade gliomas from  Cox subtype model, OVERALL
+```{r}
+exclude_lowgrade <- seer0to39 %>%
+  filter(lowgrade_exclude == 0)
+  
+cox <-function(ac, var, name){
+  x <<-exclude_lowgrade %>%
+    filter(age_cat3 %in% ac)
+    
+model<-coxph(Surv(fumo, can_dead) ~ var  + race_ethnicity + age + Yost_ACS_2006_2010_quintile + cluster(state), data = x) # Model adjusted for race, age, and a measure of poverty
+
+a <-as.data.frame(exp(cbind(HR = coef(model), confint(model))))
+   a <-a[c(1),] %>%
+     rownames_to_column() %>%
+    mutate(model="Adjusted for race/ethnicity, age, and Yost SES indicator") %>%
+    mutate(age_group = name) %>%
+    rename(Category = rowname) %>%
+    mutate(Category = case_when(Category == "varEnrolled" ~ "Enrolled")) %>%
+    mutate(analysis = "ex LGAST from main")
+}
+
+cox2 <-function(ac, var, name){
+  x<<-exclude_lowgrade %>%
+    filter(age_cat3 %in% ac)
+    
+model<-coxph(Surv(fumo, can_dead) ~ var +  race_ethnicity + age + Yost_ACS_2006_2010_quintile + cluster(state), data = x) # Model adjusted for race, age, and Yost SES index
+
+a<-as.data.frame(exp(cbind(HR = coef(model), confint(model))))
+   a<-a[c(1,2,3,4),] %>%
+    rownames_to_column() %>%
+   mutate(model="Adjusted for race/ethnicity, age, and Yost SES index") %>%
+    mutate(age_group = name) %>%
+    rename(Category = rowname) %>%
+    mutate(Category = case_when(Category == "varEnrolled" ~ "Enrolled",
+                                Category == "varOther discontinuous" ~ "Other discontinuous",
+                                Category == "varOther" ~ "Other",
+                                Category == "varContinuous" ~ "Continuous",
+                                Category == "varAt diagnosis" ~ "At diagnosis")) %>%
+     mutate(analysis = "ex LGAST from main")
+}
+
+a<-cox(c("0 to 14"), x$In_Medicaid_Flag, "0 to 14")
+b<-cox("15 to 39", x$In_Medicaid_Flag, "15 to 39")
+
+c<-cox2(c("0 to 14"), x$mcont66.2, "0 to 14")
+d<-cox2(c("15 to 39"), x$mcont66.2, "15 to 39")
+
+SuppTable7a<-  rbind(a,b,c,d)
+```
+
+# Astrocytomas
+```{r}
+exclude_lowgrade_ast <- seer0to39 %>%
+  filter(lowgrade_exclude == 0, brain == "3.1 Astrocytoma") # This excludes tumors that are classifed as "3.1.1 Specified low-grade astrocytic tumors" from astrocytomas according to the website: https://seer.cancer.gov/ayarecode/aya-who2008.html
+  
+cox <-function(ac, var, name){
+  x<<-exclude_lowgrade_ast %>%
+    filter(age_cat3 %in% ac)
+    
+model<-coxph(Surv(fumo, can_dead) ~ var  + race_ethnicity + age + Yost_ACS_2006_2010_quintile + cluster(state), data = x) # Model adjusted for race, age, and a measure of poverty
+
+a<-as.data.frame(exp(cbind(HR = coef(model), confint(model))))
+   a<-a[c(1),] %>%
+     rownames_to_column() %>%
+    mutate(model="Adjusted for race/ethnicity, age, and Yost SES indicator") %>%
+    mutate(age_group = name) %>%
+    rename(Category = rowname) %>%
+    mutate(Category = case_when(Category == "varEnrolled" ~ "Enrolled")) %>%
+     mutate(analysis = "ex LGAST from AST")
+}
+
+cox2 <-function(ac, var, name){
+  x<<-exclude_lowgrade_ast %>%
+    filter(age_cat3 %in% ac)
+    
+model<-coxph(Surv(fumo, can_dead) ~ var +  race_ethnicity + age + Yost_ACS_2006_2010_quintile + cluster(state), data = x) # Model adjusted for race, age, and Yost SES index
+
+
+a<-as.data.frame(exp(cbind(HR = coef(model), confint(model))))
+   a<-a[c(1,2,3,4),] %>%
+    rownames_to_column() %>%
+   mutate(model="Adjusted for race/ethnicity, age, and Yost SES index") %>%
+    mutate(age_group = name) %>%
+    rename(Category = rowname) %>%
+    mutate(Category = case_when(Category == "varEnrolled" ~ "Enrolled",
+                                Category == "varOther discontinuous" ~ "Other discontinuous",
+                                Category == "varOther" ~ "Other",
+                                Category == "varContinuous" ~ "Continuous",
+                                Category == "varAt diagnosis" ~ "At diagnosis")) %>%
+     mutate(analysis = "ex LGAST from AST")
+
+}
+
+a<-cox(c("0 to 14"), x$In_Medicaid_Flag, "0 to 14")
+b<-cox("15 to 39", x$In_Medicaid_Flag, "15 to 39")
+
+c<-cox2(c("0 to 14"), x$mcont66.2, "0 to 14")
+d<-cox2(c("15 to 39"), x$mcont66.2, "15 to 39")
+
+SuppTable7b<-  rbind(a,b,c,d)
+```
+
+# SUPPLEMENTARY TABLE 7
+```{r}
+SuppTable7 <- rbind(SuppTable7a, SuppTable7b)
+```
+
+# Clean up tables for merging for sensitivity plot comparison
+```{r}
+Table3_pc <- Table3 %>%
+  mutate(analysis = "No exclusions") %>%
+  rename(`Age category` = age_cat) %>%
+  dplyr::select("Category", "HR", "2.5%", "97.5%", "Age category", "analysis")
+
+SuppTable7_pc <- SuppTable7 %>%
+  rename(`Age category` = age_group, `2.5%` = `2.5 %`, `97.5%` = `97.5 %`) %>%
+  
+  select(-model)
+
+SuppTable5_pc <- SuppTable5 %>%
+  rename(`Age category` = age_cat, Category = term, HR = estimate, `2.5%` = conf.low, `97.5%` = conf.high) %>%
+  filter(btype == "3.1 Astrocytoma") %>%
+  select(-c(btype, variable, abbrev )) %>%
+  mutate(analysis = "No exclusions AST")
+
+# row bind three dataframes
+
+for_sens_plotting <- rbind(Table3_pc, SuppTable7_pc, SuppTable5_pc)
+```
+
+# Sensitivity plotting MAIN
+```{r}
+# 0 to 14, binary variable
+p<- for_sens_plotting %>%
+  filter(`Age category` == "0 to 14", Category == "Enrolled", analysis %in% c("ex LGAST from main", "No exclusions")) %>%
+  ggplot() +
+  geom_point(aes(y=HR, x = analysis, group = Category, color = Category), na.rm=TRUE, position=position_dodge(width=0.9), size =4) + 
+  geom_hline(yintercept =1, linetype=2) +
+  geom_vline(xintercept =c(1.5, 2.5,3.5,4.5,5.5,6.5,7.5,8.5,9.5), linetype=2, color = "lightgray") +
+  theme(axis.text.y=element_blank()) +
+  geom_errorbar(aes(y=HR, x= analysis, ymax = `2.5%`, ymin = `97.5%`, group = Category, color = Category), na.rm=TRUE, position=position_dodge(width=0.9), width = 0.1) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    # axis.text.y = element_blank(),
+    axis.text.x=element_text(size=10, face = "bold", color = "black"),
+    axis.text.y=element_text(size=10, face = "bold", color = "black"),
+    axis.title.x=element_text(size=10, face = "bold", color = "black"),
+    axis.title.y=element_text(size=10, face = "bold", color = "black"))+
+  coord_flip() +
+  labs(color = NULL,  x = "Category") +
+  labs(color = NULL, x = "Category", title = "A. 0 to 14 for binary variable") +  # Add the title here
+  theme(strip.placement = "inside", legend.position = "bottom", strip.text = element_text(size = 10, face = "bold", color = "black"), strip.background = element_rect(fill = "lightgray"), plot.title = element_text(face = "bold"), legend.text = element_text(size = 10, face = "bold"))
+
+p
+
+library(scales)
+# 0 to 14, continuity variable
+q <- for_sens_plotting %>%
+  filter(`Age category` == "0 to 14", Category != "Enrolled", analysis %in% c("ex LGAST from main","No exclusions")) %>%
+  ggplot() +
+  geom_point(aes(y=HR, x = analysis, group = Category, color = Category), na.rm=TRUE, position=position_dodge(width=0.9), size =4) + 
+  geom_hline(yintercept =1, linetype=2) +
+  geom_vline(xintercept =c(1.5, 2.5,3.5,4.5,5.5,6.5,7.5,8.5,9.5), linetype=2, color = "lightgray") +
+  theme(axis.text.y=element_blank()) +
+  geom_errorbar(aes(y=HR, x= analysis, ymax = `2.5%`, ymin = `97.5%`, group = Category, color = Category), na.rm=TRUE, position=position_dodge(width=0.9), width = 0.1) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x=element_text(size=10, face = "bold", color = "black"),
+    axis.text.y=element_text(size=10, face = "bold", color = "black"),
+    axis.title.x=element_text(size=10, face = "bold", color = "black"),
+    axis.title.y=element_text(size=10, face = "bold", color = "black"))+
+  coord_flip() +
+  labs(color = NULL,  x = "Category") +
+  labs(color = NULL, x = "Category", title = "B. 0 to 14 for continuity variable") +  # Add the title here
+  theme(strip.placement = "inside", legend.position = "bottom", strip.text = element_text(size = 10, face = "bold", color = "black"), strip.background = element_rect(fill = "lightgray"), plot.title = element_text(face = "bold"), legend.text = element_text(size = 10, face = "bold")) +
+guides(colour = guide_legend(nrow = 2))
+
+q 
+
+# 15 to 39, binary variable
+r <- for_sens_plotting %>%
+  filter(`Age category` == "15 to 39", Category == "Enrolled", analysis %in% c("ex LGAST from main", "No exclusions")) %>%
+  ggplot() +
+  geom_point(aes(y=HR, x = analysis, group = Category, color = Category), na.rm=TRUE, position=position_dodge(width=0.9), size =4) + 
+  geom_hline(yintercept =1, linetype=2) +
+  geom_vline(xintercept =c(1.5, 2.5,3.5,4.5,5.5,6.5,7.5,8.5,9.5), linetype=2, color = "lightgray") +
+  theme(axis.text.y=element_blank()) +
+  geom_errorbar(aes(y=HR, x= analysis, ymax = `2.5%`, ymin = `97.5%`, group = Category, color = Category), na.rm=TRUE, position=position_dodge(width=0.9), width = 0.1) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x=element_text(size=10, face = "bold", color = "black"),
+    axis.text.y=element_text(size=10, face = "bold", color = "black"),
+    axis.title.x=element_text(size=10, face = "bold", color = "black"),
+    axis.title.y=element_text(size=10, face = "bold", color = "black"))+
+  coord_flip() +
+  labs(color = NULL,  x = "Category") +
+  labs(color = NULL, x = "Category", title = "C. 15 to 39 for binary variable") +  # Add the title here
+  theme(strip.placement = "inside", legend.position = "bottom", strip.text = element_text(size = 10, face = "bold", color = "black"), strip.background = element_rect(fill = "lightgray"), plot.title = element_text(face = "bold"), legend.text = element_text(size = 10, face = "bold"))
+
+r
+
+# 15 to 39, continuity variable
+s <- for_sens_plotting %>%
+  filter(`Age category` == "15 to 39", Category != "Enrolled", analysis %in% c("ex LGAST from main", "No exclusions")) %>%
+  ggplot() +
+  geom_point(aes(y=HR, x = analysis, group = Category, color = Category), na.rm=TRUE, position=position_dodge(width=0.9), size =4) + 
+  geom_hline(yintercept =1, linetype=2) +
+  geom_vline(xintercept =c(1.5, 2.5,3.5,4.5,5.5,6.5,7.5,8.5,9.5), linetype=2, color = "lightgray") +
+  theme(axis.text.y=element_blank()) +
+  geom_errorbar(aes(y=HR, x= analysis, ymax = `2.5%`, ymin = `97.5%`, group = Category, color = Category), na.rm=TRUE, position=position_dodge(width=0.9), width = 0.1) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x=element_text(size=10, face = "bold", color = "black"),
+    axis.text.y=element_text(size=10, face = "bold", color = "black"),
+    axis.title.x=element_text(size=10, face = "bold", color = "black"),
+    axis.title.y=element_text(size=10, face = "bold", color = "black"))+
+  coord_flip() +
+  labs(color = NULL,  x = "Category") +
+  labs(color = NULL, x = "Category", title = "D. 15 to 39 for continuity variable") +  # Add the title here
+  theme(strip.placement = "inside", legend.position = "bottom", strip.text = element_text(size = 10, face = "bold", color = "black"), strip.background = element_rect(fill = "lightgray"), plot.title = element_text(face = "bold"), legend.text = element_text(size = 10, face = "bold")) +
+guides(colour = guide_legend(nrow = 2))
+
+s
+```
+
+# Sensitivity plotting AST
+```{r}
+table(for_sens_plotting$analysis)
+
+# 0 to 14, In_Medicaid_Flag
+t <- for_sens_plotting %>%
+  filter(`Age category` == "0 to 14", Category == "Enrolled", analysis %in% c("ex LGAST from AST", "No exclusions AST")) %>%
+  ggplot() +
+  geom_point(aes(y=HR, x = analysis, group = Category, color = Category), na.rm=TRUE, position=position_dodge(width=0.9), size =4) + 
+  geom_hline(yintercept =1, linetype=2) +
+  geom_vline(xintercept =c(1.5, 2.5,3.5,4.5,5.5,6.5,7.5,8.5,9.5), linetype=2, color = "lightgray") +
+  theme(axis.text.y=element_blank()) +
+  geom_errorbar(aes(y=HR, x= analysis, group = Category, color = Category, ymax = `2.5%`, ymin = `97.5%`), na.rm=TRUE, position=position_dodge(width=0.9), width = 0.1) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x=element_text(size=10, face = "bold", color = "black"),
+    axis.text.y=element_text(size=10, face = "bold", color = "black"),
+    axis.title.x=element_text(size=10, face = "bold", color = "black"),
+    axis.title.y=element_text(size=10, face = "bold", color = "black"))+
+  coord_flip() +
+  labs(color = NULL,  x = "Category") +
+  labs(color = NULL, x = "Category", title = "A. 0 to 14 for binary variable") +  
+  theme(strip.placement = "inside", legend.position = "bottom", strip.text = element_text(size = 10, face = "bold", color = "black"), strip.background = element_rect(fill = "lightgray"), plot.title = element_text(face = "bold"), legend.text = element_text(size = 10, face = "bold"))
+
+t
+
+# 0 to 14, mcont66.2
+u <- for_sens_plotting %>%
+  filter(`Age category` == "0 to 14", Category != "Enrolled", analysis %in% c("ex LGAST from AST", "No exclusions AST")) %>%
+  ggplot() +
+  geom_point(aes(y=HR, x = analysis, group = Category, color = Category), na.rm=TRUE, position=position_dodge(width=0.9), size =4) + 
+  geom_hline(yintercept =1, linetype=2) +
+  geom_vline(xintercept =c(1.5, 2.5,3.5,4.5,5.5,6.5,7.5,8.5,9.5), linetype=2, color = "lightgray") +
+  theme(axis.text.y=element_blank()) +
+  geom_errorbar(aes(y=HR, x= analysis, ymax = `2.5%`, ymin = `97.5%`, group = Category, color = Category), na.rm=TRUE, position=position_dodge(width=0.9), width = 0.1) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x=element_text(size=10, face = "bold", color = "black"),
+    axis.text.y=element_text(size=10, face = "bold", color = "black"),
+    axis.title.x=element_text(size=10, face = "bold", color = "black"),
+    axis.title.y=element_text(size=10, face = "bold", color = "black"))+
+  coord_flip() +
+  labs(color = NULL,  x = "Category") +
+  labs(color = NULL, x = "Category", title = "B. 0 to 14 for continuity variable") +  
+  theme(strip.placement = "inside", legend.position = "bottom", strip.text = element_text(size = 10, face = "bold", color = "black"), strip.background = element_rect(fill = "lightgray"), plot.title = element_text(face = "bold"), legend.text = element_text(size = 10, face = "bold"))+
+guides(colour = guide_legend(nrow = 2))
+
+u
+
+# 15 to 39, In_Medicaid_Flag
+v <- for_sens_plotting %>%
+  filter(`Age category` == "15 to 39", Category == "Enrolled", analysis %in% c("ex LGAST from AST", "No exclusions AST")) %>%
+  ggplot() +
+  geom_point(aes(y=HR, x = analysis, group = Category, color = Category), na.rm=TRUE, position=position_dodge(width=0.9), size =4) + 
+  geom_hline(yintercept =1, linetype=2) +
+  geom_vline(xintercept =c(1.5, 2.5,3.5,4.5,5.5,6.5,7.5,8.5,9.5), linetype=2, color = "lightgray") +
+  theme(axis.text.y=element_blank()) +
+  geom_errorbar(aes(y=HR, x= analysis, group = Category, color = Category, ymax = `2.5%`, ymin = `97.5%`), na.rm=TRUE, position=position_dodge(width=0.9), width = 0.1) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x=element_text(size=10, face = "bold", color = "black"),
+    axis.text.y=element_text(size=10, face = "bold", color = "black"),
+    axis.title.x=element_text(size=10, face = "bold", color = "black"),
+    axis.title.y=element_text(size=10, face = "bold", color = "black"))+
+  coord_flip() +
+  labs(color = NULL,  x = "Category") +
+  labs(color = NULL, x = "Category", title = "C. 15 to 39 for binary variable") + 
+  theme(strip.placement = "inside", legend.position = "bottom", strip.text = element_text(size = 10, face = "bold", color = "black"), strip.background = element_rect(fill = "lightgray"), plot.title = element_text(face = "bold"), legend.text = element_text(size = 10, face = "bold"))
+
+v
+
+# 15 to 39, mcont66.2
+w <- for_sens_plotting %>%
+  filter(`Age category` == "15 to 39", Category != "Enrolled", analysis %in% c("ex LGAST from AST", "No exclusions AST")) %>%
+  ggplot() +
+  geom_point(aes(y=HR, x = analysis, group = Category, color = Category), na.rm=TRUE, position=position_dodge(width=0.9), size =4) + 
+  geom_hline(yintercept =1, linetype=2) +
+  geom_vline(xintercept =c(1.5, 2.5,3.5,4.5,5.5,6.5,7.5,8.5,9.5), linetype=2, color = "lightgray") +
+  theme(axis.text.y=element_blank()) +
+  geom_errorbar(aes(y=HR, x= analysis, ymax = `2.5%`, ymin = `97.5%`, group = Category, color = Category), na.rm=TRUE, position=position_dodge(width=0.9), width = 0.1) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x=element_text(size=10, face = "bold", color = "black"),
+    axis.text.y=element_text(size=10, face = "bold", color = "black"),
+    axis.title.x=element_text(size=10, face = "bold", color = "black"),
+    axis.title.y=element_text(size=10, face = "bold", color = "black"))+
+  coord_flip() +
+  labs(color = NULL,  x = "Category") +
+  labs(color = NULL, x = "Category", title = "D. 15 to 39 for continuity variable") +  
+  theme(strip.placement = "inside", legend.position = "bottom", strip.text = element_text(size = 10, face = "bold", color = "black"), strip.background = element_rect(fill = "lightgray"), plot.title = element_text(face = "bold"), legend.text = element_text(size = 10, face = "bold"))+
+guides(colour = guide_legend(nrow = 2))
+
+w
+```
+# SUPPLEMENTARY FIGURE 3 and 4: Sensitivity analysis, Put all the plots together
+```{r}
+pdf("SUPPLEMENTARY FIGURE 3.pdf", width=11, height=8.5, paper="USr")
+p + q + r + s + plot_layout(ncol=2, nrow=2) 
+
+dev.off()
+
+pdf("SUPPLEMENTARY FIGURE 4.pdf", width=11, height=8.5, paper="USr")
+t + u + v + w + plot_layout(ncol=2, nrow=2) 
+
+dev.off()
+```
+# Clean up Supplementary Tables
+```{r}
+# 1
+SuppTable1 <- SuppTable1 %>%
+  rename(`lower 95% CI` = lowCI,
+         `upper 95% CI` = highCI,
+          `Brain tumor subtype` = BrainType) %>%
+  mutate_if(is.numeric, round, 2)
+
+SuppTable1$`OR (95% CI)` <-paste0(SuppTable1$OR, " (", SuppTable1$`lower 95% CI`, " to ", SuppTable1$`upper 95% CI`, ")") 
+SuppTable1 <- SuppTable1 %>%
+  dplyr::select(1,6,7,8)
+
+# 2
+SuppTable2 <- SuppTable2 %>%
+  rename(`lower 95% CI` = `Lower CI`,
+         `upper 95% CI` = `Upper CI`)
+
+SuppTable2$`Survival percentage  (95% CI)` <-paste0(SuppTable2$`Survival Percentage`, " (", SuppTable2$`lower 95% CI`, " to ", SuppTable2$`upper 95% CI`, ")") 
+
+SuppTable2 <- SuppTable2 %>%
+  dplyr::select(1,2,3,7)
+
+# 3
+SuppTable3 <- SuppTable3 %>%
+  rename(`lower 95% CI` = LowerCI,
+         `upper 95% CI` = UpperCI,
+         `Age group` = Age_cat,
+         `Brain tumor subtype` = Brain_tumor_subtype)
+
+
+SuppTable3$`Survival percentage  (95% CI)` <-paste0(SuppTable3$Survival_Percentage, " (", SuppTable3$`lower 95% CI`, " to ", SuppTable3$`upper 95% CI`, ")") 
+
+SuppTable3 <- SuppTable3 %>%
+  dplyr::select(1,5,6,8)
+
+# 4
+SuppTable4 <- SuppTable4 %>%
+  rename(`lower 95% CI` = `2.5 %`,
+         `upper 95% CI` = `97.5 %`,
+         `Age group` = `Age category`,
+         Comparison = Category)%>%
+  mutate_if(is.numeric, round, 2)
+
+SuppTable4$Comparison <-paste0(SuppTable4$Comparison, " vs. Not enrolled") 
+
+SuppTable4$`HR  (95% CI)` <-paste0(SuppTable4$HR, " (", SuppTable4$`lower 95% CI`, " to ", SuppTable4$`upper 95% CI`, ")") 
+
+SuppTable4 <- SuppTable4 %>%
+  dplyr::select(-c(2,3,4,5))
+
+
+# 5 
+SuppTable5 <- SuppTable5 %>%
+  rename(`lower 95% CI` = conf.low,
+         `upper 95% CI` = conf.high,
+         `Age group` = age_cat,
+         `Brain tumor subtype` = btype,
+          HR = estimate,
+         Comparison = term)%>%
+  mutate_if(is.numeric, round, 2)
+
+SuppTable5$Comparison <-paste0(SuppTable5$Comparison, " vs. Not enrolled") 
+
+SuppTable5$`HR  (95% CI)` <-paste0(SuppTable5$HR, " (", SuppTable5$`lower 95% CI`, " to ", SuppTable5$`upper 95% CI`, ")") 
+
+SuppTable5 <- SuppTable5 %>%
+  dplyr::select(-c(2,3,4,7,8))
+
+# 6 Race/ethnicity
+SuppTable6 <- SuppTable6 %>%
+  rename(`lower 95% CI` = `2.5 %`,
+         `upper 95% CI` = `97.5 %`,
+          Comparison = Category) %>%
+  mutate(`Age group` = "15 to 39") %>%
+  mutate_if(is.numeric, round, 2) %>%
+  select(-c(variable, variable2))
+
+SuppTable6$Comparison <-paste0(SuppTable6$Comparison, " vs. Not enrolled") 
+
+SuppTable6$`HR  (95% CI)` <-paste0(SuppTable6$HR, " (", SuppTable6$`lower 95% CI`, " to ", SuppTable6$`upper 95% CI`, ")") 
+
+SuppTable6 <- SuppTable6 %>%
+  dplyr::select(-c(2,3,4,5))
+
+
+# 7 sensitivity analysis
+SuppTable7 <- SuppTable7 %>%
+  rename(`lower 95% CI` = `2.5 %`,
+         `upper 95% CI` = `97.5 %`,
+         `Age group` = age_group,
+          Comparison = Category)%>%
+  mutate_if(is.numeric, round, 2)
+
+SuppTable7$Comparison <-paste0(SuppTable7$Comparison, " vs. Not enrolled") 
+
+SuppTable7$`HR  (95% CI)` <-paste0(SuppTable7$HR, " (", SuppTable7$`lower 95% CI`, " to ", SuppTable7$`upper 95% CI`, ")") 
+
+SuppTable7 <- SuppTable7 %>%
+  dplyr::select(-c(2,3,4,5))
+
+```
+
+# Supplementary Table 8
+```{r}
+# use this because of small counts (Supp Table 8
+table1(~ sex + age_cat3 + race_ethnicity2 + Yost_ACS_2006_2010_quintile + brain2 + stage + surgery_radiation2 + can_dead2 + dead2| mcont66.2, droplevels = TRUE, seer0to39)
+```
+
+
+# Export supplementary tables to excel
+```{r}
+sheets <- list("Table 2" = Table2,
+               "Table 3" = Table3)
+
+write.xlsx(sheets, file="Tables.xlsx", showNA=TRUE, overwrite = TRUE)
+
+sheets <- list("Supp Table 1 (stage btype)" = SuppTable1,
+               "Supp Table 2 (surv 60 mo)" = SuppTable2,
+               "Supp Table 3 (surv 60 btype)" = SuppTable3,
+               "Supp Table 4 (HRs overall surv)" = SuppTable4,
+               "Supp Table 5 (HRs by btype)" = SuppTable5,
+               "Supp Table 6 (HRs by dem)" = SuppTable6,
+               "Supp Table 7 (sens)" = SuppTable7)
+
+write.xlsx(sheets, file="Supplementary tables.xlsx", showNA=TRUE, overwrite = TRUE)
+```
+
+
+# EXPLORATORY ANALYSIS: TREATMENT DIFFERENCES RADIATION AND SURGERY 
+- logistic analysis to see if Medicaid predicts radiation and surgery
+- 0 to 14
+```{r}
+# Surgery In_Medicaid_Flag
+model1 <- miceadds::glm.cluster(seer0to39 %>% filter(age_cat3 == "0 to 14", surgery != "Unknown"), surgery ~ In_Medicaid_Flag + race_cat2 + age + brain2 + Yost_ACS_2006_2010_quintile + stage, cluster="state", family="binomial")
+summary(model1)
+
+# The odds of surgery was 22% lower in those with Medicaid
+
+# Radiation In_Medicaid_Flag
+model2 <- miceadds::glm.cluster(seer0to39 %>% filter(age_cat3 == "0 to 14", radiation != "Unknown", surgery == "No surgery"), radiation ~ In_Medicaid_Flag + race_cat2 + age + brain2 + Yost_ACS_2006_2010_quintile + stage, cluster="state", family="binomial")
+summary(model2)
+
+# The odds of radiation was 1.64 times higher in those with Medicaid
+
+# exclude low grades
+
+# Surgery In_Medicaid_Flag
+model1a <- miceadds::glm.cluster(seer0to39 %>% filter(age_cat3 == "0 to 14", surgery != "Unknown", lowgrade_exclude == 0), surgery ~ In_Medicaid_Flag + race_cat2 + age + brain2 + Yost_ACS_2006_2010_quintile, cluster="state", family="binomial")
+summary(model1a)
+
+# Radiation In_Medicaid_Flag
+model2a <- miceadds::glm.cluster(seer0to39 %>% filter(age_cat3 == "0 to 14", radiation != "Unknown", lowgrade_exclude == 0), radiation ~ In_Medicaid_Flag + race_cat2 + age + brain2 + Yost_ACS_2006_2010_quintile, cluster="state", family="binomial")
+summary(model2a)
+
+# Surgery mcont66.2
+model3 <- miceadds::glm.cluster(seer0to39 %>% filter(age_cat3 == "0 to 14", surgery != "Unknown"), surgery ~ mcont66.2 + race_cat2 + age + brain2 + Yost_ACS_2006_2010_quintile, cluster="state", family="binomial")
+summary(model3)
+
+# Radiation mcont66.2
+model4 <- miceadds::glm.cluster(seer0to39 %>% filter(age_cat3 == "0 to 14", radiation != "Unknown"), radiation ~ mcont66.2 + race_cat2 + age + brain2 + Yost_ACS_2006_2010_quintile, cluster="state", family="binomial")
+summary(model4)
+```
+
+# 15 to 39
+```{r}
+# Surgery In_Medicaid_Flag
+model1 <- miceadds::glm.cluster(seer0to39 %>% filter(age_cat3 == "15 to 39", surgery != "Unknown"), surgery ~ In_Medicaid_Flag + race_cat2 + age + brain2 + Yost_ACS_2006_2010_quintile, cluster="state", family="binomial")
+summary(model1)
+
+# The odds of surgery was 18% lower in those with Medicaid
+
+# Radiation In_Medicaid_Flag
+model2 <- miceadds::glm.cluster(seer0to39 %>% filter(age_cat3 == "15 to 39", radiation != "Unknown"), radiation ~ In_Medicaid_Flag + race_cat2 + age + brain2 + Yost_ACS_2006_2010_quintile, cluster="state", family="binomial")
+summary(model2)
+
+# The odds of radiation was 1.43 times higher in those with Medicaid
+```
+
