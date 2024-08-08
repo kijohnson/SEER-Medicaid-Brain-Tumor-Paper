@@ -8,8 +8,11 @@ output: html_document
 # The main code to generate input files is in "Analysis code 0 to 19.Rmd"
 # Open libraries
 ```{r}
-# install.packages("pacman")
+install.packages("pacman")
 pacman::p_load(readr, dplyr, tidyverse, lubridate, survival, survminer, hablar, table1, patchwork, openxlsx, DiagrammeR, lmtest, forestplot, MASS, nnet, broom, forcats, sandwich, mlogit, sjstats, odds.n.ends, labelled, readxl, multcomp, DiagrammeRsvg, rsvg)  
+
+pacman::p_load(mice)
+pacman::p_load(miceadds)
 ```
 
 # Import files used for analysis
@@ -485,7 +488,7 @@ table1(~ sex + race_ethnicity + Yost_ACS_2006_2010_quintile + mcont66.2 +brain2 
 ```{r}
 seer0to39_stage <- seer0to39 %>%
   filter(!is.na(stage)) %>% 
-  select(stage, In_Medicaid_Flag, SEER_registry, mcont66.2, race_ethnicity2, race_cat2, age_cat, age, Yost_ACS_2006_2010_quintile, state, brain, brain2, age_cat2, age_cat3) %>%
+  select(stage, In_Medicaid_Flag, SEER_registry, mcont66.2, race_ethnicity2, race_cat2, age_cat, age, Yost_ACS_2006_2010_quintile, state, brain, brain2, age_cat2, age_cat3, Year_of_diagnosis) %>%
   mutate(stage2 = case_when(stage == "In situ/localized" ~ 0, 
                             stage %in% c("Regional", "Distant") ~ 1)) # combine regional and distant
 
@@ -494,7 +497,6 @@ seer0to39_stage$stage2 <- factor(seer0to39_stage$stage2, levels = c(0,1), labels
 
 - 0 to 14
 ```{r}
-
 # In_Medicaid_Flag adjusted model 0 to 14
 model1 <- miceadds::glm.cluster(seer0to39_stage %>% filter(age_cat3 == "0 to 14"), stage2 ~ In_Medicaid_Flag + race_cat2 + age + brain2 + Yost_ACS_2006_2010_quintile, cluster="state", family="binomial")
 summary(model1)
@@ -518,6 +520,7 @@ df$`Age group` <- "0 to 14"
 
 table(seer0to39_stage$brain2)
 ```
+
 
 - 15 to 39
 ```{r}
@@ -595,6 +598,26 @@ rep_str = c('mcont66.2Continuous'='Continuous vs. not enrolled', 'mcont66.2Other
 df4$`Exposure comparison`<- str_replace_all(df4$`Exposure comparison`, rep_str) # this is the dataframe for summary results
 df4$`Age group` <- "15 to 39"
 ```
+
+# get stage model n's  for exposure x outcome for revision for Table 2
+```{r}
+# Filter the dataset
+filtered_data <- seer0to39_stage %>% filter(age_cat3 == "0 to 14")
+filtered_data2 <- seer0to39_stage %>% filter(age_cat3 == "15 to 39")
+
+# Get the total number of observations
+n_total <- nrow(filtered_data)
+
+table(filtered_data$stage2, filtered_data$In_Medicaid_Flag)
+table(filtered_data$stage2, filtered_data$mcont66.2)
+
+# Get the total number of observations
+n_total <- nrow(filtered_data2)
+
+table(filtered_data2$stage2, filtered_data2$In_Medicaid_Flag)
+table(filtered_data2$stage2, filtered_data2$mcont66.2)
+```
+
 
 # TABLE 2: Stage at diagnosis analysis
 ```{r}
@@ -812,7 +835,6 @@ seer0to15 <- seer0to39 %>%
 
 seer15to39 <- seer0to39 %>%
   filter(age >=15)
-
 ```
 
 # Enrolled vs. Not enrolled -plots by cancer type for four main cancer types
@@ -946,48 +968,64 @@ Plot4
 ```
 # FIGURE 2: KM Survival plots by age group In_Medicaid Flag (only cancer specific death in Figure 2)
 ```{r}
-plot_KM_curves <- function(myvar, agevar, labs, title){
-formula_str <<- paste("Surv(fumo, can_dead) ~", myvar)
-x <<- seer0to39 %>% 
-  filter(age_cat3 ==agevar)
-ggsurvplot(fit = survfit(as.formula(formula_str), data = x), 
-                    size = 0.75,
+plot_KM_curves <- function(myvar, agevar, labs, title) {
+  # Create the formula for survival analysis
+  formula_str <<- paste("Surv(fumo, can_dead) ~", myvar)
+
+  # Filter the dataset based on age category
+  x <<- seer0to39 %>% filter(age_cat3 == agevar)
+  
+  # Wrap legend labels
+  wrapped_labs <- str_wrap(labs, width = 10)  # Adjust the width as needed
+  
+  # Fit the survival model and create the plot
+  p <- ggsurvplot(
+    fit = survfit(as.formula(formula_str), data = x), 
+    size = 0.75,
     xlab = "Months from diagnosis", 
     ylab = "Survival probability", 
-    fun="pct",  
+    fun = "pct",  
     title = title,
     font.title = c(12, "bold"),
     legend.title = "",
     legend = "bottom",
-    font.legend=c(8, "bold"),
-    legend.labs = labs,
-    palette = c("black", "#D2D2D2", "#A0A0A0", "#6E6E6E", "#EBEBEB"),
+    font.legend = c(8, "bold"),
+    legend.labs = wrapped_labs,
+    linetype = "strata",
+    palette = c("black", "#7D7D7D", "#ABABAB", "#CECECE", "#EBEBEB"),
     font.x = c(12, "bold"),
     font.y = c(12, "bold"),
-    xlim=c(0, 60),
+    xlim = c(0, 60),
     break.x.by = 12,
-    ylim=c(0, 100),
-    censor.size=0.25,
+    ylim = c(0, 100),
+    censor.size = 0.25,
     font.tickslab = c(12, "bold"),
-    pval=TRUE,
+    pval = TRUE,
     pval.size = 5,
-    pval.coord = c(0,10),
-    conf.int = FALSE) 
-  
+    pval.coord = c(0, 10),
+    conf.int = FALSE
+  )
 }
 plot1 <- plot_KM_curves("In_Medicaid_Flag", agevar = "0 to 14", c("Not enrolled", "Enrolled"), title = "A. 0 to 14")
 plot2 <- plot_KM_curves("In_Medicaid_Flag", agevar = "15 to 39", c("Not enrolled", "Enrolled"), title = "B. 15 to 39")
-plot3 <- plot_KM_curves("mcont66.2", agevar = "0 to 14", c("Not enrolled", "Continuous", "Other discontinuous", "Other", "At diagnosis"), title = "C. 0 to 14") + guides(color = guide_legend(nrow = 2))
-plot4 <- plot_KM_curves("mcont66.2", agevar = "15 to 39", c("Not enrolled", "Continuous", "Other discontinuous", "Other", "At diagnosis"), title = "D. 15 to 39") + guides(color = guide_legend(nrow = 2))
+plot3 <- plot_KM_curves("mcont66.2", agevar = "0 to 14", c("Not enrolled", "Continuous", "Other discontinuous", "Other", "At diagnosis"), title = "C. 0 to 14") 
+plot4 <- plot_KM_curves("mcont66.2", agevar = "15 to 39", c("Not enrolled", "Continuous", "Other discontinuous", "Other", "At diagnosis"), title = "D. 15 to 39") 
 
+plot1
+plot2
+plot3
+plot4
 ```
 
 # overall death
 ```{r}
 plot_KM_curves <- function(myvar, agevar, labs, title){
+  
 formula_str <<- paste("Surv(fumo, dead) ~", myvar)
-x <- seer0to39 %>% 
+
+x <<- seer0to39 %>% 
   filter(age_cat3 ==agevar)
+
 ggsurvplot(fit = survfit(as.formula(formula_str), data = x), 
                     size = 0.75,
     xlab = "Months from diagnosis", 
@@ -999,6 +1037,7 @@ ggsurvplot(fit = survfit(as.formula(formula_str), data = x),
     legend = "bottom",
     font.legend=c(8, "bold"),
     legend.labs = labs,
+    linetype = "strata",
     palette = c("black", "#D2D2D2", "#A0A0A0", "#6E6E6E", "#EBEBEB"),
     font.x = c(12, "bold"),
     font.y = c(12, "bold"),
@@ -1011,19 +1050,29 @@ ggsurvplot(fit = survfit(as.formula(formula_str), data = x),
     pval.size = 5,
     pval.coord = c(0,10),
     conf.int = FALSE) 
+
   
 }
+
 plot1a <- plot_KM_curves("In_Medicaid_Flag", agevar = "0 to 14", c("Not enrolled", "Enrolled"), title = "A. 0 to 14")
 plot2a <- plot_KM_curves("In_Medicaid_Flag", agevar = "15 to 39", c("Not enrolled", "Enrolled"), title = "B. 15 to 39")
-plot3a <- plot_KM_curves("mcont66.2", agevar = "0 to 14", c("Not enrolled", "Continuous", "Other discontinuous", "Other", "At diagnosis"), title = "C. 0 to 14") + guides(fill = guide_legend(nrow = 2))
-plot4a <- plot_KM_curves("mcont66.2", agevar = "15 to 39", c("Not enrolled", "Continuous", "Other discontinuous", "Other", "At diagnosis"), title = "D. 15 to 39") + guides(fill = guide_legend(nrow = 2))
+plot3a <- plot_KM_curves("mcont66.2", agevar = "0 to 14", c("Not enrolled", "Continuous", "Other discontinuous", "Other", "At diagnosis"), title = "C. 0 to 14") 
+plot4a <- plot_KM_curves("mcont66.2", agevar = "15 to 39", c("Not enrolled", "Continuous", "Other discontinuous", "Other", "At diagnosis"), title = "D. 15 to 39") 
+
 ```
 
 
 # FIGURE 2: Survival curves for medicaid enrollment variables 
 ```{r}
+# Print the combined plot to the PDF
+print(plot1$plot)
+print(plot2$plot)
+print(plot3$plot)
+print(plot4$plot)
+
+# Create a PDF file for output
 pdf("Figure 2.pdf", width=12, height=8.5, paper="USr")
-plot1$plot  + plot2$plot + plot3$plot + plot4$plot + plot_layout(ncol=2, nrow=2, guides='keep') 
+plot1$plot + plot2$plot + plot3$plot + plot4$plot + plot_layout(ncol = 2, nrow = 2, guides = 'keep')
 dev.off()
 ```
 
@@ -1345,7 +1394,7 @@ Plot1 <- SuppTable3 %>%
   theme(axis.text.y=element_blank()) +
   geom_errorbar(aes(y = Survival_Percentage, x = abbrev, ymax = LowerCI, ymin = UpperCI, group = Category, color = Category), height =0.5, width = 0.4, position = position_dodge(width=0.9)) +
   theme_bw() +
-  theme(axis.line = element_line(colour = "black"),
+  theme(axis.line = element_line(colour = c("black", "#D2D2D2", "#A0A0A0", "#6E6E6E", "#EBEBEB")),
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank(),
     panel.border = element_blank(),
@@ -1357,7 +1406,7 @@ Plot1 <- SuppTable3 %>%
   coord_flip() +
   labs(color = NULL, x= "Brain tumor subtype", y = "60-month survival (%)", title = "A. 0 to 14 years") +
   ylim(0, 100) +
-  scale_color_manual(values = c("black", "gray")) + 
+  scale_color_manual(values = c("black", "#D2D2D2", "#A0A0A0", "#6E6E6E", "#EBEBEB")) + 
   theme(strip.placement = "inside", legend.position = "bottom",  strip.text = element_text(size = 9, face="bold", color="black"), strip.background = element_rect(fill="lightgray"), plot.title = element_text(face="bold"), legend.text=element_text(size=12, face="bold")) 
 
 Plot1
@@ -1373,7 +1422,7 @@ Plot2 <- SuppTable3 %>%
   theme(axis.text.y=element_blank()) +
   geom_errorbar(aes(y = Survival_Percentage, x = abbrev, ymax = LowerCI, ymin = UpperCI, group = Category, color = Category), height =0.5, width = 0.4, position = position_dodge(width=0.9)) +
   theme_bw() +
-  theme(axis.line = element_line(colour = "black"),
+  theme(axis.line = element_line(colour =c("black", "#7D7D7D", "#ABABAB", "#CECECE", "#EBEBEB")),
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank(),
     panel.border = element_blank(),
@@ -1385,7 +1434,7 @@ Plot2 <- SuppTable3 %>%
   coord_flip() +
   labs(color = NULL, x= "Brain tumor subtype", y = "60-month survival (%)", title = "B. 15 to 39 years") +
   ylim(0, 100) +
-  scale_color_manual(values = c("black", "gray")) + 
+  scale_color_manual(values = c("black", "#7D7D7D", "#ABABAB", "#CECECE", "#EBEBEB")) + 
   theme(strip.placement = "inside", legend.position = "bottom",  strip.text = element_text(size = 9, face="bold", color="black"), strip.background = element_rect(fill="lightgray"), plot.title = element_text(face="bold"), legend.text=element_text(size=12, face="bold")) 
 
 Plot2
@@ -1401,7 +1450,7 @@ Plot3 <- SuppTable3 %>%
   theme(axis.text.y=element_blank()) +
   geom_errorbar(aes(y = Survival_Percentage, x = abbrev, ymax = LowerCI, ymin = UpperCI, group = Category, color = Category), height =0.5, width = 0.4, position = position_dodge(width=0.9)) +
   theme_bw() +
-  theme(axis.line = element_line(colour = "black"),
+  theme(axis.line = element_line(colour = c("black", "#7D7D7D", "#ABABAB", "#CECECE", "#EBEBEB")),
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank(),
     panel.border = element_blank(),
@@ -1413,7 +1462,7 @@ Plot3 <- SuppTable3 %>%
   coord_flip() +
   labs(color = NULL, x= "Brain tumor subtype", y = "60-month survival (%)", title = "C. 0 to 14 years") +
   ylim(0, 100) +
-  scale_color_manual(values = c("black", "#D2D2D2", "#A0A0A0", "#6E6E6E", "#EBEBEB")) + 
+  scale_color_manual(values = c("black", "#7D7D7D", "#ABABAB", "#CECECE", "#EBEBEB")) + 
   theme(strip.placement = "inside", legend.position = "bottom",  strip.text = element_text(size = 9, face="bold", color="black"), strip.background = element_rect(fill="lightgray"), plot.title = element_text(face="bold"), legend.text=element_text(size=12, face="bold"))  +
   guides(color = guide_legend(nrow = 3, byrow = TRUE))
 
@@ -1430,7 +1479,7 @@ Plot4 <- SuppTable3 %>%
   theme(axis.text.y=element_blank()) +
   geom_errorbar(aes(y = Survival_Percentage, x = abbrev, ymax = LowerCI, ymin = UpperCI, group = Category, color = Category), height =0.5, width = 0.4, position = position_dodge(width=0.9)) +
   theme_bw() +
-  theme(axis.line = element_line(colour = "black"),
+  theme(axis.line = element_line(colour = c("black", "#7D7D7D", "#ABABAB", "#CECECE", "#EBEBEB")),
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank(),
     panel.border = element_blank(),
@@ -1442,7 +1491,7 @@ Plot4 <- SuppTable3 %>%
   coord_flip() +
   labs(color = NULL, x= "Brain tumor subtype", y = "60-month survival (%)", title = "D. 15 to 39 years") +
   ylim(0, 100) +
-  scale_color_manual(values = c("black", "#D2D2D2", "#A0A0A0", "#6E6E6E", "#EBEBEB")) + 
+  scale_color_manual(values = c("black", "#7D7D7D", "#ABABAB", "#CECECE", "#EBEBEB")) + 
   theme(strip.placement = "inside", legend.position = "bottom",  strip.text = element_text(size = 9, face="bold", color="black"), strip.background = element_rect(fill="lightgray"), plot.title = element_text(face="bold"), legend.text=element_text(size=12, face="bold")) +
    guides(color = guide_legend(nrow = 3, byrow = TRUE))
 
@@ -1502,6 +1551,63 @@ Table3 <- Table3 %>%
   select(-variable)
 ```
 
+# get survival model n's and persontime for exposure x outcome for revision
+```{r}
+# Filter the dataset
+filtered_data <- seer0to39 %>% filter(age_cat3 == "0 to 14")
+
+filtered_data2 <- seer0to39 %>% filter(age_cat3 == "15 to 39") 
+
+summary_data <- filtered_data  %>%
+  group_by(In_Medicaid_Flag) %>%
+  summarize(
+    events = sum(can_dead),
+    total_person_time = sum(fumo),
+    incidence_rate = events / total_person_time
+  )
+irr <- summary_data$incidence_rate[summary_data$In_Medicaid_Flag == "Enrolled"] /
+       summary_data$incidence_rate[summary_data$In_Medicaid_Flag == "Not Enrolled"]
+
+
+summary_data <- filtered_data  %>%
+  group_by(mcont66.2) %>%
+  summarize(
+    events = sum(can_dead),
+    total_person_time = sum(fumo),
+    incidence_rate = events / total_person_time
+  )
+irr2 <- summary_data$incidence_rate[summary_data$mcont66.2 == "At diagnosis"] /
+       summary_data$incidence_rate[summary_data$mcont66.2 == "Not enrolled"]
+
+cox_model <- coxph(Surv(fumo, can_dead) ~ mcont66.2, data = filtered_data)
+summary(cox_model)
+
+# 15 to 39
+
+summary_data <- filtered_data2  %>%
+  group_by(In_Medicaid_Flag) %>%
+  summarize(
+    events = sum(can_dead),
+    total_person_time = sum(fumo),
+    incidence_rate = events / total_person_time
+  )
+irr3 <- summary_data$incidence_rate[summary_data$In_Medicaid_Flag == "Enrolled"] /
+       summary_data$incidence_rate[summary_data$In_Medicaid_Flag == "Not Enrolled"]
+
+
+summary_data <- filtered_data2  %>%
+  group_by(mcont66.2) %>%
+  summarize(
+    events = sum(can_dead),
+    total_person_time = sum(fumo),
+    incidence_rate = events / total_person_time
+  )
+irr4 <- summary_data$incidence_rate[summary_data$mcont66.2 == "At diagnosis"] /
+       summary_data$incidence_rate[summary_data$mcont66.2 == "Not enrolled"]
+
+irr4
+
+```
 
 # SUPPLEMENTARY TABLE 4: Do the results materially change if we use death from any cause?
 ```{r}
@@ -2488,5 +2594,155 @@ model2 <- miceadds::glm.cluster(seer0to39 %>% filter(age_cat3 == "15 to 39", rad
 summary(model2)
 
 # The odds of radiation was 1.43 times higher in those with Medicaid
+```
+
+# FOR REVISIONS NEURO-ONCOLOGY PRACTICE (NOP)
+```{r}
+# define year of dx cat (before 2010, ≥2010)
+seer0to39_stage_exp <- seer0to39_stage %>%
+  mutate(dx_year_cat = case_when(Year_of_diagnosis < 2010 ~ 0,
+                                 Year_of_diagnosis >= 2011 ~ 1)) %>%
+    filter(state %in% c(6,9,34,53))
+  
+seer0to39_stage_exp$dx_year_cat <- factor(seer0to39_stage_exp$dx_year_cat, levels = c(0,1), labels = c("diagnosis <2010", "diagnosis ≥ 2011")) %>%
+
+
+
+# Adopters since 2010 from: https://www.kff.org/affordable-care-act/issue-brief/states-getting-a-jump-start-on-health/
+  #(CA = 6, CT = 9, DC = 11, MN = 27, NJ =34, and WA = 53) 
+
+# get n for each age group before 2010 and 2010 to 2013
+summary <- seer0to39_stage_exp %>%
+  group_by(age_cat3, stage2, dx_year_cat, In_Medicaid_Flag) %>%
+  tally()
+
+# In_Medicaid_Flag adjusted model 0 to 14
+model1 <- miceadds::glm.cluster(seer0to39_stage_exp %>% filter(age_cat3 == "0 to 14"), stage2 ~ In_Medicaid_Flag + race_cat2 + age + brain2 + Yost_ACS_2006_2010_quintile + dx_year_cat + In_Medicaid_Flag*dx_year_cat, cluster="state", family="binomial")
+summary(model1)
+
+# extract coefficients 
+b <-as.data.frame(exp(coef(model1)))
+CI<- as.data.frame(exp(confint(model1, level=0.95))) # CI(95%)
+SE <- as.data.frame(sqrt(diag(vcov(model1))))
+p <- (1-pnorm(abs(coef(model1)/sqrt(diag(vcov(model1)))))) * 2
+df <- cbind(b, CI, p)
+
+# In_Medicaid_Flag adjusted model 15 to 39
+model1 <- miceadds::glm.cluster(seer0to39_stage_exp %>% filter(age_cat3 == "15 to 39"), stage2 ~ In_Medicaid_Flag + race_cat2 + age + brain2 + Yost_ACS_2006_2010_quintile + dx_year_cat + In_Medicaid_Flag*dx_year_cat, cluster="state", family="binomial")
+summary(model1)
+
+# extract coefficients 
+b <-as.data.frame(exp(coef(model1)))
+CI<- as.data.frame(exp(confint(model1, level=0.95))) # CI(95%)
+SE <- as.data.frame(sqrt(diag(vcov(model1))))
+p <- (1-pnorm(abs(coef(model1)/sqrt(diag(vcov(model1)))))) * 2
+df2 <- cbind(b, CI, p)
+
+# marginally significant for 15 to 39
+# In_Medicaid_Flag adjusted model 15 to 39 <2010
+model1 <- miceadds::glm.cluster(seer0to39_stage_exp %>% filter(age_cat3 == "15 to 39", Year_of_diagnosis <2010), stage2 ~ In_Medicaid_Flag + race_cat2 + age + brain2 + Yost_ACS_2006_2010_quintile, cluster="state", family="binomial")
+summary(model1)
+
+# extract coefficients 
+b <-as.data.frame(exp(coef(model1)))
+CI<- as.data.frame(exp(confint(model1, level=0.95))) # CI(95%)
+SE <- as.data.frame(sqrt(diag(vcov(model1))))
+p <- (1-pnorm(abs(coef(model1)/sqrt(diag(vcov(model1)))))) * 2
+df2 <- cbind(b, CI, p)
+
+
+# significant for 15 to 39
+# In_Medicaid_Flag adjusted model 15 to 39 >2010 (2010 treated as washout year)
+
+model1 <- miceadds::glm.cluster(seer0to39_stage_exp %>% filter(age_cat3 == "15 to 39", Year_of_diagnosis >=2011), stage2 ~ In_Medicaid_Flag + race_cat2 + age + brain2 + Yost_ACS_2006_2010_quintile, cluster="state", family="binomial")
+summary(model1)
+
+# extract coefficients 
+b <-as.data.frame(exp(coef(model1)))
+CI<- as.data.frame(exp(confint(model1, level=0.95))) # CI(95%)
+SE <- as.data.frame(sqrt(diag(vcov(model1))))
+p <- (1-pnorm(abs(coef(model1)/sqrt(diag(vcov(model1)))))) * 2
+df2 <- cbind(b, CI, p)
+```
+
+# Survival
+```{r}
+# define dx_year_cat
+seer0to39_exp <- seer0to39%>%
+  mutate(dx_year_cat = case_when(Year_of_diagnosis <2010 ~"<2010",
+                                 Year_of_diagnosis >2010 ~ ">2010")) %>%
+   filter(state %in% c(6,9,34,53))
+table(seer0to39_exp$dx_year_cat)
+# Initialize an empty data frame to store results
+results <- data.frame()
+
+# Nested loops for age_cat2, and variables
+  for (i in c("0 to 14", "15 to 39")) {
+    for (variable in c("In_Medicaid_Flag", "mcont66.2")) {
+      for(year in c("<2010", ">2010")){
+      df <- seer0to39_exp %>% filter(age_cat3 == i, dx_year_cat == year)
+      formula <- as.formula(paste("Surv(fumo, can_dead) ~", variable, "+ race_ethnicity + age + Yost_ACS_2006_2010_quintile + cluster(state)"))
+      res.cox2 <- coxph(formula, data = df) 
+      print(paste(", age_cat2 =", i, ", and variable =", variable))
+      print(summary(res.cox2))
+
+      df2 <- as.data.frame(tidy(res.cox2, exponentiate = TRUE, conf.int = TRUE))
+      df2$age_cat <- i
+      df2$variable <- variable
+      df2$model <- "Adjusted for race/ethnicity, age, and Yost SES indicator"
+      df2$year_category <- year
+
+      # Append the new row to the results data frame
+      results <- rbind(results, df2 %>% filter(term %in% c("In_Medicaid_FlagEnrolled", "mcont66.2Continuous", "mcont66.2Other discontinuous", "mcont66.2Other", "mcont66.2At diagnosis")) %>% select(term, estimate, conf.low, conf.high, age_cat, variable, year_category))
+    }
+    }
+  }
+
+Table3 <- results
+
+# Strip off "mcont66.2" from the variable values
+Table3$term <- sub("^mcont66.2", "", Table3$term)
+
+# Strip off "In_Medicaid_Flag" from the variable values
+Table3$term <- sub("^In_Medicaid_Flag", "", Table3$term)
+
+# rename columns
+Table3 <- Table3 %>%
+  rename(Category = "term",
+         HR = estimate,
+         `2.5%` = conf.low,
+         `97.5%` = conf.high) %>%
+  select(-variable)
+```
+
+# get interaction p-values
+```{r}
+# 0 to 14
+df <- seer0to39_exp %>% filter(age_cat3 == "0 to 14")
+      model0 <- coxph(Surv(fumo, can_dead) ~ In_Medicaid_Flag + race_ethnicity + age + Yost_ACS_2006_2010_quintile + dx_year_cat + In_Medicaid_Flag*dx_year_cat + cluster(state), data = df) 
+summary(model0) # not significant
+
+      model1 <- coxph(Surv(fumo, can_dead) ~ mcont66.2 + race_ethnicity + age + Yost_ACS_2006_2010_quintile + dx_year_cat  + cluster(state), data = df) 
+summary(model1)
+
+      model2 <- coxph(Surv(fumo, can_dead) ~ mcont66.2 + race_ethnicity + age + Yost_ACS_2006_2010_quintile + mcont66.2*dx_year_cat + cluster(state), data = df) 
+summary(model2)
+
+lrtest(model1, model2) # not significant
+
+# 15 to 39
+
+df2 <- seer0to39_exp %>% filter(age_cat3 == "15 to 39")
+
+      model0 <- coxph(Surv(fumo, can_dead) ~ In_Medicaid_Flag + race_ethnicity + age + Yost_ACS_2006_2010_quintile + dx_year_cat + In_Medicaid_Flag*dx_year_cat + cluster(state), data = df2) 
+summary(model0) # not significant
+
+      model1 <- coxph(Surv(fumo, can_dead) ~ mcont66.2 + race_ethnicity + age + Yost_ACS_2006_2010_quintile + dx_year_cat  + cluster(state), data = df2) 
+summary(model1)
+
+      model2 <- coxph(Surv(fumo, can_dead) ~ mcont66.2 + race_ethnicity + age + Yost_ACS_2006_2010_quintile + mcont66.2*dx_year_cat + cluster(state), data = df2) 
+summary(model2)
+
+lrtest(model1, model2) # not significant
 ```
 
