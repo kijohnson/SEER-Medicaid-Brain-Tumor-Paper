@@ -8,7 +8,7 @@ output: html_document
 # The main code to generate input files is in "Analysis code 0 to 19.Rmd"
 # Open libraries
 ```{r}
-install.packages("pacman")
+# install.packages("pacman")
 pacman::p_load(readr, dplyr, tidyverse, lubridate, survival, survminer, hablar, table1, patchwork, openxlsx, DiagrammeR, lmtest, forestplot, MASS, nnet, broom, forcats, sandwich, mlogit, sjstats, odds.n.ends, labelled, readxl, multcomp, DiagrammeRsvg, rsvg)  
 
 pacman::p_load(mice)
@@ -210,13 +210,13 @@ seer0to39 <- seer0to39 %>%
                             AYA_site_recode_WHO_2008 %in% c(10) ~ 1, # 3.2 Other glioma
                             AYA_site_recode_WHO_2008 %in% c(11) ~ 2, # 3.3 Ependymoma
                             AYA_site_recode_WHO_2008 %in% c(12,13) ~ 3, # 3.4 Medulloblastoma and other PNET
-                            AYA_site_recode_WHO_2008 %in% c(14) ~ 4, # 3.5 Other specified intracranial and instraspinal neoplasms
+                            AYA_site_recode_WHO_2008 %in% c(14) ~ 4, # 3.5 Other specified intracranial and intraspinal neoplasms
                             AYA_site_recode_WHO_2008 %in% c(15,16) ~ 5)) # 3.6 Unspecified intracranial and intraspinal neoplasms
 seer0to39$brain
 table(seer0to39$brain, useNA = "always")
 
 # make brain2 for Table 1 because of small numbers
-# combine because of small numbers (3.5 Other specified intracranial and instraspinal neoplasms, 3.6 Unspecified intracranial and intraspinal neoplasms)
+# combine because of small numbers (3.5 Other specified intracranial and intraspinal neoplasms, 3.6 Unspecified intracranial and intraspinal neoplasms)
 seer0to39 <- seer0to39 %>%
   mutate(brain2 = if_else(brain %in% c(4,5), 4, brain)) 
 
@@ -228,7 +228,7 @@ seer0to39$brain <- factor(seer0to39$brain, levels = c(0:5), labels = c(
   "3.2 Other glioma",
   "3.3 Ependymoma",
   "3.4 Medulloblastoma and other PNET",
-  "3.5 Other specified intracranial and instraspinal neoplasms",
+  "3.5 Other specified intracranial and intraspinal neoplasms",
   "3.6 Unspecified intracranial and intraspinal neoplasms"))
 table(seer0to39$brain, useNA = "always")
 
@@ -237,7 +237,7 @@ seer0to39$brain2 <- factor(seer0to39$brain2, levels = c(0:4), labels = c(
   "3.2 Other glioma",
   "3.3 Ependymoma",
   "3.4 Medulloblastoma and other PNET",
-  "Other specified (3.5) and unspecified (3.6) intracranial and instraspinal neoplasms"))
+  "Other specified (3.5) and unspecified (3.6) intracranial and intraspinal neoplasms"))
 table(seer0to39$brain2, useNA = "always")
 
 # further classify low grade astrocytomas for sensitivity analysis (exclude low grade)
@@ -246,6 +246,7 @@ seer0to39 <- seer0to39 %>%
                                       AYA_site_recode_WHO_2008 != 7 ~ 0)) # those are not low grade tumors
 
 table(seer0to39$brain, seer0to39$Grade)
+table(seer0to39$brain2, seer0to39$Grade)
 ```
 
 - treatment variables
@@ -1217,7 +1218,7 @@ colnames(results) <- columns
 
 # get unique brain tumor types
 ct <- unique(seer0to39$brain2)
-
+table(ct)
 # for loop to get brain tumor specific results
 for (i in ct) {
   df <- seer0to39 %>% filter(brain2 == i, age_cat3 == "0 to 14")
@@ -1378,7 +1379,7 @@ SuppTable3 <- SuppTable3 %>%
                             Brain_tumor_subtype == "3.2 Other glioma" ~ 1,
                             Brain_tumor_subtype == "3.3 Ependymoma" ~ 2,
                             Brain_tumor_subtype == "3.4 Medulloblastoma and other PNET" ~ 3,
-                            Brain_tumor_subtype == "Other specified (3.5) and unspecified (3.6) intracranial and instraspinal neoplasms" ~ 4))
+                            Brain_tumor_subtype == "Other specified (3.5) and unspecified (3.6) intracranial and intraspinal neoplasms" ~ 4))
 
 SuppTable3$abbrev <- factor(SuppTable3$abbrev, levels = c(0:4), labels = c("ASTRO", "OGLI", "EPEN", "MB/PNET", "OSPEC/UNSPEC"))
 ```
@@ -1404,7 +1405,7 @@ Plot1 <- SuppTable3 %>%
     axis.title.x=element_text(size=12, face = "bold", color = "black"),
     axis.title.y=element_text(size=12, face = "bold", color = "black"))+
   coord_flip() +
-  labs(color = NULL, x= "Brain tumor subtype", y = "60-month survival (%)", title = "A. 0 to 14 years") +
+  labs(color = NULL, x= "CNS tumor subtype", y = "60-month survival (%)", title = "A. 0 to 14 years") +
   ylim(0, 100) +
   scale_color_manual(values = c("black", "#D2D2D2", "#A0A0A0", "#6E6E6E", "#EBEBEB")) + 
   theme(strip.placement = "inside", legend.position = "bottom",  strip.text = element_text(size = 9, face="bold", color="black"), strip.background = element_rect(fill="lightgray"), plot.title = element_text(face="bold"), legend.text=element_text(size=12, face="bold")) 
@@ -1432,7 +1433,7 @@ Plot2 <- SuppTable3 %>%
     axis.title.x=element_text(size=12, face = "bold", color = "black"),
     axis.title.y=element_text(size=12, face = "bold", color = "black"))+
   coord_flip() +
-  labs(color = NULL, x= "Brain tumor subtype", y = "60-month survival (%)", title = "B. 15 to 39 years") +
+  labs(color = NULL, x= "CNS tumor subtype", y = "60-month survival (%)", title = "B. 15 to 39 years") +
   ylim(0, 100) +
   scale_color_manual(values = c("black", "#7D7D7D", "#ABABAB", "#CECECE", "#EBEBEB")) + 
   theme(strip.placement = "inside", legend.position = "bottom",  strip.text = element_text(size = 9, face="bold", color="black"), strip.background = element_rect(fill="lightgray"), plot.title = element_text(face="bold"), legend.text=element_text(size=12, face="bold")) 
@@ -1460,7 +1461,7 @@ Plot3 <- SuppTable3 %>%
     axis.title.x=element_text(size=12, face = "bold", color = "black"),
     axis.title.y=element_text(size=12, face = "bold", color = "black"))+
   coord_flip() +
-  labs(color = NULL, x= "Brain tumor subtype", y = "60-month survival (%)", title = "C. 0 to 14 years") +
+  labs(color = NULL, x= "CNS tumor subtype", y = "60-month survival (%)", title = "C. 0 to 14 years") +
   ylim(0, 100) +
   scale_color_manual(values = c("black", "#7D7D7D", "#ABABAB", "#CECECE", "#EBEBEB")) + 
   theme(strip.placement = "inside", legend.position = "bottom",  strip.text = element_text(size = 9, face="bold", color="black"), strip.background = element_rect(fill="lightgray"), plot.title = element_text(face="bold"), legend.text=element_text(size=12, face="bold"))  +
@@ -1489,7 +1490,7 @@ Plot4 <- SuppTable3 %>%
     axis.title.x=element_text(size=12, face = "bold", color = "black"),
     axis.title.y=element_text(size=12, face = "bold", color = "black"))+
   coord_flip() +
-  labs(color = NULL, x= "Brain tumor subtype", y = "60-month survival (%)", title = "D. 15 to 39 years") +
+  labs(color = NULL, x= "CNS tumor subtype", y = "60-month survival (%)", title = "D. 15 to 39 years") +
   ylim(0, 100) +
   scale_color_manual(values = c("black", "#7D7D7D", "#ABABAB", "#CECECE", "#EBEBEB")) + 
   theme(strip.placement = "inside", legend.position = "bottom",  strip.text = element_text(size = 9, face="bold", color="black"), strip.background = element_rect(fill="lightgray"), plot.title = element_text(face="bold"), legend.text=element_text(size=12, face="bold")) +
@@ -1711,7 +1712,7 @@ for (i in ct) {
 }
 
 SuppTable5 <- results
-SuppTable5$abbrev <- factor(SuppTable5$btype, levels = c("3.1 Astrocytoma", "3.2 Other glioma", "3.3 Ependymoma", "3.4 Medulloblastoma and other PNET", "Other specified (3.5) and unspecified (3.6) intracranial and instraspinal neoplasms"), labels = c("ASTRO", "OGLI", "EPEN", "MB/PNET", "OTHER"))
+SuppTable5$abbrev <- factor(SuppTable5$btype, levels = c("3.1 Astrocytoma", "3.2 Other glioma", "3.3 Ependymoma", "3.4 Medulloblastoma and other PNET", "Other specified (3.5) and unspecified (3.6) intracranial and intraspinal neoplasms"), labels = c("ASTRO", "OGLI", "EPEN", "MB/PNET", "OTHER"))
 
 # Strip off "mcont66.2" from the variable values
 SuppTable5$term <- sub("^mcont66.2", "", SuppTable5$term)
@@ -1738,13 +1739,15 @@ plot_survival_results <- function(data, variable, age_group, title) {
       geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.5, position = position_dodge(width = 0.8)) +
       geom_vline(xintercept =1, linetype=2) +
       labs(title = title,
-           x = "HR", y = "Brain Tumor Subtype") +
+           x = "HR", y = "CNS Tumor Subtype") +
       theme_classic() +
       theme(legend.position = "bottom",
             axis.title.x=element_text(size=12, face = "bold", color = "black"),
             axis.title.y=element_text(size=12, face = "bold", color = "black"),
-            plot.title = element_text(face="bold")) +
-  theme(legend.title=element_blank())
+            plot.title = element_text(face="bold"),
+            legend.text = element_text(size = 8, face = "bold")) +
+  theme(legend.title=element_blank(),
+        )
    guides(color = guide_legend(nrow = 3, byrow = TRUE))
 
     print(p)
@@ -1752,8 +1755,12 @@ plot_survival_results <- function(data, variable, age_group, title) {
 }
 
 A <- plot_survival_results(SuppTable5 %>% filter(variable == "In_Medicaid_Flag"), variable, "0 to 14", title = "A. 0 to 14")
+A
+
 B <- plot_survival_results(SuppTable5 %>% filter(variable == "In_Medicaid_Flag"), variable, "15 to 39", title = "B. 15 to 39")
+
 C <- plot_survival_results(SuppTable5 %>% filter(variable == "mcont66.2"), variable, "0 to 14", title = "C. 0 to 14")
+C
 D <- plot_survival_results(SuppTable5 %>% filter(variable == "mcont66.2"), variable, "15 to 39", title = "D. 15 to 39")
 ```
 
@@ -1987,7 +1994,9 @@ plot_survival_results <- function(data, Variable,  title, Variable2, ytitle) {
       theme(legend.position = "bottom",
             axis.title.x=element_text(size=12, face = "bold", color = "black"),
             axis.title.y=element_text(size=12, face = "bold", color = "black"),
-            plot.title = element_text(face="bold")) +
+            plot.title = element_text(face="bold"),
+            legend.title = element_text(face = "bold"),  # Title bold
+            legend.text = element_text(face = "bold")) +   # Labels bold) 
   theme(legend.title=element_blank()) 
 
     print(p)
@@ -1996,7 +2005,7 @@ plot_survival_results <- function(data, Variable,  title, Variable2, ytitle) {
 
 A <- plot_survival_results(SuppTable6, "In_Medicaid_Flag",   title = "A. Sex ", "sex", "Sex")
 B <- plot_survival_results(SuppTable6, "In_Medicaid_Flag",  title = "B. Race/ethnicity", "race_ethnicity", "Race/ethnicity category")
-C <- plot_survival_results(SuppTable6, "mcont66.2",  title = "C. Race/ethncity", "race_ethnicity", "Race/ethnicity category")
+C <- plot_survival_results(SuppTable6, "mcont66.2",  title = "C. Race/ethnicity", "race_ethnicity", "Race/ethnicity category")
 ```
 
 ```{r}
